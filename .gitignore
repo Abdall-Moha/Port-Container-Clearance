@@ -26,6 +26,12 @@ coverage
 uploads/*
 !uploads/.gitkeep
 
+
+# Uploaded private documents
+uploads/documents/*
+!uploads/documents/.gitkeep
+
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

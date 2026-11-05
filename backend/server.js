@@ -6,6 +6,10 @@ import connectDatabase from "./config/database.js";
 import UserRoute from "./routes/UserRoute.js";
 import PortRoute from "./routes/PortRoute.js";
 import ShippingLineRoute from "./routes/ShippingLineRoute.js";
+import BillOfLadingRoute from "./routes/BillOfLadingRoute.js";
+import ContainerRoute from "./routes/ContainerRoute.js";
+import DocumentRoute from "./routes/DocumentRoute.js";
+import DocumentVersionRoute from "./routes/DocumentVersionRoute.js";
 
 import {RateLimitingMiddleware} from "./middleware/RateLimitingMiddleware.js";
 import ErrorMiddleware from "./middleware/ErrorMiddleware.js";
@@ -27,6 +31,10 @@ app.use("/api", RateLimitingMiddleware);
 app.use("/api/users", UserRoute);
 app.use("/api/ports", PortRoute);
 app.use("/api/shipping-lines", ShippingLineRoute);
+app.use("/api/bills-of-lading", BillOfLadingRoute);
+app.use("/api/containers", ContainerRoute);
+app.use("/api/documents", DocumentRoute);
+app.use("/api/document-versions", DocumentVersionRoute);
 
 // Handles unknown routes.
 app.use((req, res, next) => {
