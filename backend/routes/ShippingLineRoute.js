@@ -1,4 +1,3 @@
-
 import express from "express";
 
 import ShippingLine from "../models/ShippingLine.js";
@@ -6,6 +5,22 @@ import AuthMiddleware from "../middleware/AuthMiddleware.js";
 import RoleMiddleware from "../middleware/RoleMiddleware.js";
 
 const router = express.Router();
+
+// Check whether a webhook URL uses HTTP or HTTPS.
+function isValidWebhookUrl(value) {
+  try {
+    const url = new URL(value);
+
+    return (
+      ["http:", "https:"].includes(url.protocol) &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+}
 
 // POST /api/shipping-lines
 // Admin only.
@@ -25,9 +40,44 @@ router.post(
         });
       }
 
+      if (typeof name !== "string" || typeof code !== "string") {
+        return res.status(400).json({
+          message: "Shipping line name and code must be text.",
+        });
+      }
+
+      if (
+        webhookUrl !== undefined &&
+        typeof webhookUrl !== "string"
+      ) {
+        return res.status(400).json({
+          message: "Webhook URL must be text.",
+        });
+      }
+
       const normalizedName = name.trim();
       const normalizedCode = code.trim().toUpperCase();
+      const normalizedWebhookUrl = webhookUrl
+        ? webhookUrl.trim()
+        : "";
 
+      if (!normalizedName || !normalizedCode) {
+        return res.status(400).json({
+          message: "Shipping line name and code cannot be empty.",
+        });
+      }
+
+      // Validate the webhook URL when one is provided.
+      if (
+        normalizedWebhookUrl &&
+        !isValidWebhookUrl(normalizedWebhookUrl)
+      ) {
+        return res.status(400).json({
+          message: "Webhook URL must be a valid HTTP or HTTPS URL.",
+        });
+      }
+
+      // Check whether another shipping line uses the same name or code.
       const existingShippingLine = await ShippingLine.findOne({
         $or: [
           { name: normalizedName },
@@ -41,10 +91,11 @@ router.post(
         });
       }
 
+      // Create the shipping line.
       const shippingLine = await ShippingLine.create({
         name: normalizedName,
         code: normalizedCode,
-        webhookUrl: webhookUrl ? webhookUrl.trim() : "",
+        webhookUrl: normalizedWebhookUrl,
         createdBy: req.user._id,
       });
 
@@ -141,25 +192,45 @@ router.patch(
       const updates = {};
 
       if (name !== undefined) {
-        if (!name.trim()) {
+        if (typeof name !== "string" || !name.trim()) {
           return res.status(400).json({
-            message: "Shipping line name cannot be empty.",
+            message: "Shipping line name must be valid text.",
           });
         }
+
         updates.name = name.trim();
       }
 
       if (code !== undefined) {
-        if (!code.trim()) {
+        if (typeof code !== "string" || !code.trim()) {
           return res.status(400).json({
-            message: "Shipping line code cannot be empty.",
+            message: "Shipping line code must be valid text.",
           });
         }
+
         updates.code = code.trim().toUpperCase();
       }
 
       if (webhookUrl !== undefined) {
-        updates.webhookUrl = webhookUrl.trim();
+        if (typeof webhookUrl !== "string") {
+          return res.status(400).json({
+            message: "Webhook URL must be text.",
+          });
+        }
+
+        const normalizedWebhookUrl = webhookUrl.trim();
+
+        // Allow an empty URL to remove the configured endpoint.
+        if (
+          normalizedWebhookUrl &&
+          !isValidWebhookUrl(normalizedWebhookUrl)
+        ) {
+          return res.status(400).json({
+            message: "Webhook URL must be a valid HTTP or HTTPS URL.",
+          });
+        }
+
+        updates.webhookUrl = normalizedWebhookUrl;
       }
 
       if (Object.keys(updates).length === 0) {
@@ -187,6 +258,7 @@ router.patch(
         });
       }
 
+      // Update the shipping line.
       const shippingLine = await ShippingLine.findByIdAndUpdate(
         id,
         updates,

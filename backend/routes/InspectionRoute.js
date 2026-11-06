@@ -4,14 +4,13 @@ import Inspection from "../models/Inspection.js";
 import Container from "../models/Container.js";
 import User from "../models/User.js";
 import ClearanceEvent from "../models/ClearanceEvent.js";
+import createEventNotifications from "../services/NotificationService.js";
+import { createAndSendWebhook } from "../services/WebhookService.js";
 
 import AuthMiddleware from "../middleware/AuthMiddleware.js";
 import RoleMiddleware from "../middleware/RoleMiddleware.js";
 
-import {
-  uploadInspectionPhotos,
-  INSPECTION_PHOTO_DIRECTORY,
-} from "../middleware/UploadMiddleware.js";
+import { uploadInspectionPhotos } from "../middleware/UploadMiddleware.js";
 
 const router = express.Router();
 
@@ -243,14 +242,62 @@ router.post(
 
       // Record the initial transition in the clearance history.
       // Rescheduling does not create another stage transition.
+      let clearanceEvent = null;
+
       if (isInitialInspection) {
-        await ClearanceEvent.create({
-          container: container._id,
-          fromStage: "DUTY_PAID",
-          toStage: "INSPECTION",
-          performedBy: req.user._id,
-          reason: "Container inspection scheduled.",
+        try {
+          clearanceEvent = await ClearanceEvent.create({
+            container: container._id,
+            fromStage: "DUTY_PAID",
+            toStage: "INSPECTION",
+            performedBy: req.user._id,
+            reason: "Container inspection scheduled.",
+          });
+        } catch (eventError) {
+          // Restore the previous container stage if its history event cannot be saved.
+          await Container.findOneAndUpdate(
+            {
+              _id: container._id,
+              currentStage: "INSPECTION",
+            },
+            {
+              $set: {
+                currentStage: "DUTY_PAID",
+                status: "ACTIVE",
+              },
+            },
+          );
+
+          await Inspection.findByIdAndDelete(inspection._id);
+          throw eventError;
+        }
+      }
+
+      // Notify the importer and assigned agent about the inspection schedule.
+      try {
+        await createEventNotifications({
+          recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
+          containerId: container._id,
+          type: "INSPECTION",
+          titleEnglish: "Inspection Scheduled",
+          titleSomali: "Baaritaanka Waa La Qorsheeyay",
+          messageEnglish: `Inspection ${inspectionNumber} for container ${container.containerNumber} is scheduled for ${inspectionDate.toLocaleString()}.`,
+          messageSomali: `Baaritaanka ${inspectionNumber} ee konteenarka ${container.containerNumber} waxaa loo qorsheeyay ${inspectionDate.toLocaleString()}.`,
+          sendSMS: true,
         });
+      } catch (notificationError) {
+        // Notification failure must not undo a successful inspection schedule.
+        console.error("Inspection schedule notification failed:", notificationError);
+      }
+
+      // Send a webhook only for the actual DUTY_PAID to INSPECTION transition.
+      if (clearanceEvent) {
+        try {
+          await createAndSendWebhook(clearanceEvent._id);
+        } catch (webhookError) {
+          // Webhook failure must not undo the inspection schedule.
+          console.error("Inspection schedule webhook failed:", webhookError);
+        }
       }
 
       const populatedInspection = await Inspection.findById(inspection._id)
@@ -404,17 +451,99 @@ router.patch(
       inspection.notes = notes?.trim() || "";
       inspection.completedAt = new Date();
 
-      await inspection.save();
+      try {
+        await inspection.save();
+      } catch (saveError) {
+        // Restore the container if the inspection result could not be saved.
+        await Container.findOneAndUpdate(
+          result === "PASS"
+            ? {
+                _id: container._id,
+                currentStage: "RELEASED",
+              }
+            : {
+                _id: container._id,
+                currentStage: "INSPECTION",
+                status: "HELD",
+              },
+          {
+            $set: {
+              currentStage: "INSPECTION",
+              status: "ACTIVE",
+            },
+          },
+        );
 
-      // Record the successful transition in the clearance history.
+        throw saveError;
+      }
+
+      // Record the clearance transition only when the inspection passes.
+      let clearanceEvent = null;
+
       if (result === "PASS") {
-        await ClearanceEvent.create({
-          container: container._id,
-          fromStage: "INSPECTION",
-          toStage: "RELEASED",
-          performedBy: req.user._id,
-          reason: "Container passed inspection.",
+        try {
+          clearanceEvent = await ClearanceEvent.create({
+            container: container._id,
+            fromStage: "INSPECTION",
+            toStage: "RELEASED",
+            performedBy: req.user._id,
+            reason: "Container passed inspection.",
+          });
+        } catch (eventError) {
+          // Restore the container and inspection if the history event cannot be saved.
+          await Container.findOneAndUpdate(
+            {
+              _id: container._id,
+              currentStage: "RELEASED",
+            },
+            {
+              $set: {
+                currentStage: "INSPECTION",
+                status: "ACTIVE",
+              },
+            },
+          );
+
+          inspection.result = "PENDING";
+          inspection.notes = "";
+          inspection.completedAt = null;
+          await inspection.save();
+
+          throw eventError;
+        }
+      }
+
+      // Notify the importer and assigned agent about the inspection result.
+      try {
+        await createEventNotifications({
+          recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
+          containerId: container._id,
+          type: "INSPECTION",
+          titleEnglish: result === "PASS" ? "Inspection Passed" : "Inspection Failed",
+          titleSomali: result === "PASS" ? "Baaritaanka Waa La Gudbay" : "Baaritaanka Waa Lagu Dhacay",
+          messageEnglish:
+            result === "PASS"
+              ? `Container ${container.containerNumber} passed inspection and is now released.`
+              : `Container ${container.containerNumber} failed inspection and has been placed on hold. Reason: ${notes.trim()}`,
+          messageSomali:
+            result === "PASS"
+              ? `Konteenarka ${container.containerNumber} wuu gudbay baaritaanka waxaana loo wareejiyay marxaladda sii-daynta.`
+              : `Konteenarka ${container.containerNumber} wuu ku dhacay baaritaanka waxaana la saaray hakad. Sababta: ${notes.trim()}`,
+          sendSMS: true,
         });
+      } catch (notificationError) {
+        // Notification failure must not undo a recorded inspection result.
+        console.error("Inspection result notification failed:", notificationError);
+      }
+
+      // Send a webhook only when PASS changes the clearance stage to RELEASED.
+      if (clearanceEvent) {
+        try {
+          await createAndSendWebhook(clearanceEvent._id);
+        } catch (webhookError) {
+          // Webhook failure must not undo a successful inspection.
+          console.error("Inspection result webhook failed:", webhookError);
+        }
       }
 
       const populatedInspection = await Inspection.findById(inspection._id)

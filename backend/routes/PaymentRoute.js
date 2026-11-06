@@ -9,6 +9,9 @@ import ClearanceEvent from "../models/ClearanceEvent.js";
 import AuthMiddleware from "../middleware/AuthMiddleware.js";
 import RoleMiddleware from "../middleware/RoleMiddleware.js";
 
+import createEventNotifications from "../services/NotificationService.js";
+import { createAndSendWebhook } from "../services/WebhookService.js";
+
 const router = express.Router();
 
 // Supported mobile money providers.
@@ -179,7 +182,7 @@ router.get(
   Expected body:
   {
     "provider": "EVC_PLUS",
-    "phoneNumber": "252XXXXXXXXX",
+    "phoneNumber": "+252XXXXXXXXX",
     "confirmPayment": true
   }
 */
@@ -282,6 +285,29 @@ router.post(
           failureReason: "Mock payment failed. Please try again.",
         });
 
+        // Notify the importer about the failed payment.
+        try {
+          await createEventNotifications({
+            recipientIds: [container.importer],
+            containerId: container._id,
+            type: "PAYMENT",
+
+            titleEnglish: "Payment Failed",
+            titleSomali: "Bixinta Lacagta Waa Fashilantay",
+
+            messageEnglish: `The duty payment for container ${container.containerNumber} failed. Please try again.`,
+            messageSomali: `Bixinta lacagta cashuurta konteenarka ${container.containerNumber} way fashilantay. Fadlan mar kale isku day.`,
+
+            sendSMS: true,
+          });
+        } catch (notificationError) {
+          // Notification failure must not change the payment result.
+          console.error(
+            "Failed payment notification error:",
+            notificationError.message,
+          );
+        }
+
         return res.status(402).json({
           message: "Payment failed. Please try again.",
           payment: failedPayment,
@@ -328,14 +354,39 @@ router.post(
         });
       }
 
-      // Record the successful stage transition in the clearance history.
-      await ClearanceEvent.create({
-        container: container._id,
-        fromStage: "DUTY_ASSESSED",
-        toStage: "DUTY_PAID",
-        performedBy: req.user._id,
-        reason: "Duty payment completed successfully.",
-      });
+      let clearanceEvent;
+
+      try {
+        // Record the successful stage transition in the clearance history.
+        clearanceEvent = await ClearanceEvent.create({
+          container: container._id,
+          fromStage: "DUTY_ASSESSED",
+          toStage: "DUTY_PAID",
+          performedBy: req.user._id,
+          reason: "Duty payment completed successfully.",
+        });
+      } catch (eventError) {
+        // Restore the previous stage if the event could not be recorded.
+        await Container.findOneAndUpdate(
+          {
+            _id: container._id,
+            currentStage: "DUTY_PAID",
+          },
+          {
+            $set: {
+              currentStage: "DUTY_ASSESSED",
+            },
+          },
+        );
+
+        payment.status = "FAILED";
+        payment.failureReason =
+          "The payment could not be recorded in clearance history.";
+
+        await payment.save();
+
+        throw eventError;
+      }
 
       // Generate the receipt after successful payment.
       payment.receiptNumber = await generateReceiptNumber();
@@ -343,6 +394,44 @@ router.post(
       payment.paidAt = new Date();
 
       await payment.save();
+
+      // Notify the importer and assigned agent about successful payment.
+      try {
+        await createEventNotifications({
+          recipientIds: [
+            container.importer,
+            container.assignedAgent,
+          ].filter(Boolean),
+
+          containerId: container._id,
+          type: "PAYMENT",
+
+          titleEnglish: "Duty Payment Successful",
+          titleSomali: "Bixinta Lacagta Waa Guulaysatay",
+
+          messageEnglish: `The duty payment for container ${container.containerNumber} was successful. Receipt: ${payment.receiptNumber}.`,
+          messageSomali: `Bixinta lacagta cashuurta konteenarka ${container.containerNumber} way guulaysatay. Rasiidka: ${payment.receiptNumber}.`,
+
+          sendSMS: true,
+        });
+      } catch (notificationError) {
+        // Notification failure must not undo a successful payment.
+        console.error(
+          "Successful payment notification error:",
+          notificationError.message,
+        );
+      }
+
+      // Send the DUTY_PAID clearance event to the Shipping Line webhook.
+      try {
+        await createAndSendWebhook(clearanceEvent._id);
+      } catch (webhookError) {
+        // Webhook failure must not undo a successful payment.
+        console.error(
+          "Payment webhook error:",
+          webhookError.message,
+        );
+      }
 
       return res.status(201).json({
         message: "Payment completed successfully.",

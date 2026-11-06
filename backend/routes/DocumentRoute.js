@@ -8,6 +8,8 @@ import Container from "../models/Container.js";
 import AuthMiddleware from "../middleware/AuthMiddleware.js";
 import RoleMiddleware from "../middleware/RoleMiddleware.js";
 
+import createEventNotifications from "../services/NotificationService.js";
+
 const router = express.Router();
 
 // Checks whether a user is allowed to access a container's documents.
@@ -31,7 +33,7 @@ function canAccessContainer(user, container) {
 
 // GET /api/documents/container/:containerId
 // Admin, Customs Officer, owning Importer, or assigned Agent.
-// Returns all four document records and their latest uploaded versions.
+// Returns all document records and their latest uploaded versions.
 router.get(
   "/container/:containerId",
   AuthMiddleware,
@@ -204,6 +206,14 @@ router.patch(
         });
       }
 
+      const container = await Container.findById(document.container);
+
+      if (!container) {
+        return res.status(404).json({
+          message: "Related container not found.",
+        });
+      }
+
       // Never allow an Officer to review an older version.
       if (document.latestVersion !== versionNumber) {
         return res.status(409).json({
@@ -260,6 +270,43 @@ router.patch(
           },
         },
       );
+
+      // Notify the importer and assigned agent about the review result.
+      try {
+        await createEventNotifications({
+          recipientIds: [
+            container.importer,
+            container.assignedAgent,
+          ].filter(Boolean),
+
+          containerId: container._id,
+          type: "DOCUMENT_REVIEW",
+
+          titleEnglish: `Document ${status}`,
+          titleSomali:
+            status === "APPROVED"
+              ? "Dukumentiga Waa La Ansixiyay"
+              : "Dukumentiga Waa La Diiday",
+
+          messageEnglish:
+            status === "APPROVED"
+              ? `Your ${updatedDocument.documentType} document for container ${container.containerNumber} has been approved.`
+              : `Your ${updatedDocument.documentType} document for container ${container.containerNumber} has been rejected. Reason: ${cleanReason}`,
+
+          messageSomali:
+            status === "APPROVED"
+              ? `Dukumentiga ${updatedDocument.documentType} ee konteenarka ${container.containerNumber} waa la ansixiyay.`
+              : `Dukumentiga ${updatedDocument.documentType} ee konteenarka ${container.containerNumber} waa la diiday. Sababta: ${cleanReason}`,
+
+          sendSMS: true,
+        });
+      } catch (notificationError) {
+        // Notification failure must not undo a completed document review.
+        console.error(
+          "Document review notification failed:",
+          notificationError.message,
+        );
+      }
 
       return res.status(200).json({
         message: `Document ${status.toLowerCase()} successfully.`,

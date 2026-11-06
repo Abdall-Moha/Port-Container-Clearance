@@ -14,6 +14,9 @@ import ClearanceEventRoute from "./routes/ClearanceEventRoute.js";
 import DutyRateRoute from "./routes/DutyRateRoute.js";
 import PaymentRoute from "./routes/PaymentRoute.js";
 import InspectionRoute from "./routes/InspectionRoute.js";
+import WebhookDeliveryRoute from "./routes/WebhookDeliveryRoute.js";
+import ReleaseOrderRoute from "./routes/ReleaseOrderRoute.js";
+import NotificationRoute from "./routes/NotificationRoute.js";
 
 import {RateLimitingMiddleware} from "./middleware/RateLimitingMiddleware.js";
 import ErrorMiddleware from "./middleware/ErrorMiddleware.js";
@@ -43,6 +46,9 @@ app.use("/api/clearance-events", ClearanceEventRoute);
 app.use("/api/duty-rates", DutyRateRoute);
 app.use("/api/payments", PaymentRoute);
 app.use("/api/inspections", InspectionRoute);
+app.use("/api/webhooks", WebhookDeliveryRoute);
+app.use("/api/release-orders", ReleaseOrderRoute);
+app.use("/api/notifications", NotificationRoute);
 
 // Handles unknown routes.
 app.use((req, res, next) => {

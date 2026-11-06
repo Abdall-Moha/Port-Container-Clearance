@@ -1,4 +1,3 @@
-
 import express from "express";
 import fs from "fs/promises";
 import path from "path";
@@ -13,6 +12,7 @@ import {
   uploadSingleDocument,
   UPLOAD_DIRECTORY,
 } from "../middleware/UploadMiddleware.js";
+import createEventNotifications from "../services/NotificationService.js";
 
 const router = express.Router();
 
@@ -31,12 +31,7 @@ async function isValidFileSignature(filePath, mimeType) {
   try {
     const buffer = Buffer.alloc(8);
 
-    const { bytesRead } = await fileHandle.read(
-      buffer,
-      0,
-      8,
-      0,
-    );
+    const { bytesRead } = await fileHandle.read(buffer, 0, 8, 0);
 
     const signature = buffer.subarray(0, bytesRead);
 
@@ -48,9 +43,7 @@ async function isValidFileSignature(filePath, mimeType) {
     // Check the JPG file signature.
     if (mimeType === "image/jpeg") {
       return (
-        signature[0] === 0xff &&
-        signature[1] === 0xd8 &&
-        signature[2] === 0xff
+        signature[0] === 0xff && signature[1] === 0xd8 && signature[2] === 0xff
       );
     }
 
@@ -59,10 +52,7 @@ async function isValidFileSignature(filePath, mimeType) {
       return (
         signature.length >= 8 &&
         signature.equals(
-          Buffer.from([
-            0x89, 0x50, 0x4e, 0x47,
-            0x0d, 0x0a, 0x1a, 0x0a,
-          ]),
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
         )
       );
     }
@@ -90,10 +80,7 @@ async function deleteUploadedFile(filePath) {
 function canAccessContainer(user, container) {
   if (!user || !container) return false;
 
-  if (
-    user.role === "ADMIN" ||
-    user.role === "CUSTOMS_OFFICER"
-  ) {
+  if (user.role === "ADMIN" || user.role === "CUSTOMS_OFFICER") {
     return true;
   }
 
@@ -123,9 +110,7 @@ function getStoredFilePath(filePath) {
 
 // Remove private file paths before sending version information to the frontend.
 function hideFilePath(version) {
-  const versionObject = version.toObject
-    ? version.toObject()
-    : version;
+  const versionObject = version.toObject ? version.toObject() : version;
 
   const { filePath, ...publicVersion } = versionObject;
 
@@ -185,7 +170,8 @@ router.post(
         await deleteUploadedFile(savedFilePath);
 
         return res.status(403).json({
-          message: "You are not allowed to upload documents for this container.",
+          message:
+            "You are not allowed to upload documents for this container.",
         });
       }
 
@@ -255,14 +241,38 @@ router.post(
         document: document._id,
         versionNumber,
         fileName: req.file.originalname,
-        filePath: path.relative(
-          process.cwd(),
-          savedFilePath,
-        ),
+        filePath: path.relative(process.cwd(), savedFilePath),
         mimeType: req.file.mimetype,
         fileSize: req.file.size,
         uploadedBy: req.user._id,
       });
+
+      // Notify the importer and assigned agent about the new document upload.
+      try {
+        await createEventNotifications({
+          recipientIds: [container.importer, container.assignedAgent].filter(
+            Boolean,
+          ),
+
+          containerId: container._id,
+          type: "GENERAL",
+
+          titleEnglish: "New Document Uploaded",
+          titleSomali: "Dukumenti Cusub Ayaa La Soo Geliyay",
+
+          messageEnglish: `A new version of ${documentType.replaceAll("_", " ").toLowerCase()} has been uploaded for container ${container.containerNumber}. It is waiting for Customs Officer review.`,
+
+          messageSomali: `Nooc cusub oo dukumentiga ${documentType.replaceAll("_", " ").toLowerCase()} ayaa loo soo geliyay konteenarka ${container.containerNumber}. Wuxuu sugayaa dib-u-eegista Sarkaalka Kastamka.`,
+
+          sendSMS: true,
+        });
+      } catch (notificationError) {
+        // Notification failure must not undo a successful document upload.
+        console.error(
+          "Document upload notification failed:",
+          notificationError.message,
+        );
+      }
 
       return res.status(201).json({
         message: "Document uploaded successfully.",
@@ -293,57 +303,49 @@ router.post(
   Get all versions of a document.
   Only users allowed to access its container can view its versions.
 */
-router.get(
-  "/:documentId",
-  AuthMiddleware,
-  async (req, res) => {
-    try {
-      const document = await Document.findById(
-        req.params.documentId,
-      );
+router.get("/:documentId", AuthMiddleware, async (req, res) => {
+  try {
+    const document = await Document.findById(req.params.documentId);
 
-      if (!document) {
-        return res.status(404).json({
-          message: "Document not found.",
-        });
-      }
-
-      const container = await Container.findById(
-        document.container,
-      );
-
-      if (!canAccessContainer(req.user, container)) {
-        return res.status(403).json({
-          message: "You are not allowed to view these document versions.",
-        });
-      }
-
-      // Get every version, from newest to oldest.
-      const versions = await DocumentVersion.find({
-        document: document._id,
-      })
-        .sort({ versionNumber: -1 })
-        .populate("uploadedBy", "fullName email")
-        .populate("reviewedBy", "fullName email");
-
-      return res.status(200).json({
-        document: {
-          _id: document._id,
-          documentType: document.documentType,
-          latestVersion: document.latestVersion,
-          reviewStatus: document.reviewStatus,
-        },
-        versions: versions.map(hideFilePath),
-      });
-    } catch (error) {
-      console.error("Get document versions error:", error);
-
-      return res.status(500).json({
-        message: "An error occurred while retrieving document versions.",
+    if (!document) {
+      return res.status(404).json({
+        message: "Document not found.",
       });
     }
-  },
-);
+
+    const container = await Container.findById(document.container);
+
+    if (!canAccessContainer(req.user, container)) {
+      return res.status(403).json({
+        message: "You are not allowed to view these document versions.",
+      });
+    }
+
+    // Get every version, from newest to oldest.
+    const versions = await DocumentVersion.find({
+      document: document._id,
+    })
+      .sort({ versionNumber: -1 })
+      .populate("uploadedBy", "fullName email")
+      .populate("reviewedBy", "fullName email");
+
+    return res.status(200).json({
+      document: {
+        _id: document._id,
+        documentType: document.documentType,
+        latestVersion: document.latestVersion,
+        reviewStatus: document.reviewStatus,
+      },
+      versions: versions.map(hideFilePath),
+    });
+  } catch (error) {
+    console.error("Get document versions error:", error);
+
+    return res.status(500).json({
+      message: "An error occurred while retrieving document versions.",
+    });
+  }
+});
 
 /*
   GET /api/document-versions/:id/download
@@ -351,77 +353,61 @@ router.get(
   Download a specific document version.
   The file is only available to authorized users.
 */
-router.get(
-  "/:id/download",
-  AuthMiddleware,
-  async (req, res) => {
-    try {
-      const version = await DocumentVersion.findById(
-        req.params.id,
-      );
+router.get("/:id/download", AuthMiddleware, async (req, res) => {
+  try {
+    const version = await DocumentVersion.findById(req.params.id);
 
-      if (!version) {
-        return res.status(404).json({
-          message: "Document version not found.",
-        });
-      }
-
-      const document = await Document.findById(
-        version.document,
-      );
-
-      if (!document) {
-        return res.status(404).json({
-          message: "Document not found.",
-        });
-      }
-
-      const container = await Container.findById(
-        document.container,
-      );
-
-      if (!canAccessContainer(req.user, container)) {
-        return res.status(403).json({
-          message: "You are not allowed to download this document.",
-        });
-      }
-
-      // Rebuild the file path safely using its stored filename.
-      const absoluteFilePath = getStoredFilePath(
-        version.filePath,
-      );
-
-      // Check whether the physical file still exists.
-      try {
-        await fs.access(absoluteFilePath);
-      } catch {
-        return res.status(404).json({
-          message: "The uploaded file could not be found on the server.",
-        });
-      }
-
-      // Send the file to the authorized user.
-      return res.download(
-        absoluteFilePath,
-        version.fileName,
-        (error) => {
-          if (error && !res.headersSent) {
-            console.error("Document download error:", error);
-
-            res.status(500).json({
-              message: "An error occurred while downloading the document.",
-            });
-          }
-        },
-      );
-    } catch (error) {
-      console.error("Download document error:", error);
-
-      return res.status(500).json({
-        message: "An error occurred while downloading the document.",
+    if (!version) {
+      return res.status(404).json({
+        message: "Document version not found.",
       });
     }
-  },
-);
+
+    const document = await Document.findById(version.document);
+
+    if (!document) {
+      return res.status(404).json({
+        message: "Document not found.",
+      });
+    }
+
+    const container = await Container.findById(document.container);
+
+    if (!canAccessContainer(req.user, container)) {
+      return res.status(403).json({
+        message: "You are not allowed to download this document.",
+      });
+    }
+
+    // Rebuild the file path safely using its stored filename.
+    const absoluteFilePath = getStoredFilePath(version.filePath);
+
+    // Check whether the physical file still exists.
+    try {
+      await fs.access(absoluteFilePath);
+    } catch {
+      return res.status(404).json({
+        message: "The uploaded file could not be found on the server.",
+      });
+    }
+
+    // Send the file to the authorized user.
+    return res.download(absoluteFilePath, version.fileName, (error) => {
+      if (error && !res.headersSent) {
+        console.error("Document download error:", error);
+
+        res.status(500).json({
+          message: "An error occurred while downloading the document.",
+        });
+      }
+    });
+  } catch (error) {
+    console.error("Download document error:", error);
+
+    return res.status(500).json({
+      message: "An error occurred while downloading the document.",
+    });
+  }
+});
 
 export default router;

@@ -4,17 +4,33 @@ import express from "express";
 import Container from "../models/Container.js";
 import BillOfLading from "../models/BillOfLading.js";
 import User from "../models/User.js";
+import ClearanceEvent from "../models/ClearanceEvent.js";
 
 import AuthMiddleware from "../middleware/AuthMiddleware.js";
 import RoleMiddleware from "../middleware/RoleMiddleware.js";
 
+import createEventNotifications from "../services/NotificationService.js";
+import { createAndSendWebhook } from "../services/WebhookService.js";
+
 const router = express.Router();
+
+// Check whether a user is allowed to perform a particular stage transition.
+const allowedTransitions = {
+  ARRIVED: {
+    DOCUMENTS_SUBMITTED: ["IMPORTER", "CLEARING_AGENT"],
+  },
+  DOCUMENTS_SUBMITTED: {
+    CUSTOMS_REVIEW: ["CUSTOMS_OFFICER"],
+  },
+  CUSTOMS_REVIEW: {
+    DUTY_ASSESSED: ["CUSTOMS_OFFICER"],
+    DOCUMENTS_SUBMITTED: ["CUSTOMS_OFFICER"],
+  },
+};
 
 // POST /api/containers
 // Importer or Clearing Agent only.
-// Accepts billOfLading, containerNumber, size, cargoDescription,
-// hsCode, cifValue, arrivalDate, and optionally assignedAgent.
-// Registers one container under an existing Bill of Lading.
+// Register one container under an existing Bill of Lading.
 router.post(
   "/",
   AuthMiddleware,
@@ -46,7 +62,7 @@ router.post(
         });
       }
 
-      if (!billOfLading.match(/^[0-9a-fA-F]{24}$/)) {
+      if (!/^[0-9a-fA-F]{24}$/.test(billOfLading)) {
         return res.status(400).json({
           message: "Invalid Bill of Lading ID.",
         });
@@ -122,7 +138,7 @@ router.post(
       let agentId = null;
 
       if (assignedAgent) {
-        if (!assignedAgent.match(/^[0-9a-fA-F]{24}$/)) {
+        if (!/^[0-9a-fA-F]{24}$/.test(assignedAgent)) {
           return res.status(400).json({
             message: "Invalid Clearing Agent ID.",
           });
@@ -173,7 +189,6 @@ router.post(
 // Importers see their containers.
 // Clearing Agents see containers assigned to them.
 // Admins and Customs Officers can view all containers.
-// Supports optional ?stage=ARRIVED filtering.
 router.get("/", AuthMiddleware, async (req, res, next) => {
   try {
     const { stage } = req.query;
@@ -230,12 +245,11 @@ router.get("/", AuthMiddleware, async (req, res, next) => {
 // GET /api/containers/:id
 // Authenticated users.
 // Returns one container and its related BL, Importer, and Agent.
-// Importers see their own containers; Agents see assigned containers.
 router.get("/:id", AuthMiddleware, async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+    if (!/^[0-9a-fA-F]{24}$/.test(id)) {
       return res.status(400).json({
         message: "Invalid container ID.",
       });
@@ -278,10 +292,189 @@ router.get("/:id", AuthMiddleware, async (req, res, next) => {
   }
 });
 
+// PATCH /api/containers/:id/stage
+// Importer, Clearing Agent, or Customs Officer depending on the transition.
+// Accepts toStage and an optional reason for the permitted backward transition.
+router.patch("/:id/stage", AuthMiddleware, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { toStage, reason } = req.body;
+
+    if (!/^[0-9a-fA-F]{24}$/.test(id)) {
+      return res.status(400).json({
+        message: "Invalid container ID.",
+      });
+    }
+
+    if (!toStage || typeof toStage !== "string") {
+      return res.status(400).json({
+        message: "The destination stage is required.",
+      });
+    }
+
+    const container = await Container.findById(id);
+
+    if (!container) {
+      return res.status(404).json({
+        message: "Container not found.",
+      });
+    }
+
+    // Importers can only transition their own containers.
+    if (
+      req.user.role === "IMPORTER" &&
+      !container.importer.equals(req.user._id)
+    ) {
+      return res.status(403).json({
+        message: "You can only update your own containers.",
+      });
+    }
+
+    // Agents can only transition containers assigned to them.
+    if (
+      req.user.role === "CLEARING_AGENT" &&
+      (!container.assignedAgent ||
+        !container.assignedAgent.equals(req.user._id))
+    ) {
+      return res.status(403).json({
+        message: "This container is not assigned to you.",
+      });
+    }
+
+    const fromStage = container.currentStage;
+    const allowedRoles = allowedTransitions[fromStage]?.[toStage];
+
+    // Reject transitions that are not part of the clearance workflow.
+    if (!allowedRoles) {
+      return res.status(400).json({
+        message: `Transition from ${fromStage} to ${toStage} is not allowed.`,
+      });
+    }
+
+    // Check whether the user's role can perform this transition.
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({
+        message: "Your role is not allowed to perform this stage transition.",
+      });
+    }
+
+    // The backward transition requires a written explanation.
+    if (
+      fromStage === "CUSTOMS_REVIEW" &&
+      toStage === "DOCUMENTS_SUBMITTED" &&
+      (!reason ||
+        typeof reason !== "string" ||
+        reason.trim().length < 10)
+    ) {
+      return res.status(400).json({
+        message: "The reason must contain at least 10 characters.",
+      });
+    }
+
+    // Update only if the stage has not changed since it was retrieved.
+    const updatedContainer = await Container.findOneAndUpdate(
+      {
+        _id: id,
+        currentStage: fromStage,
+      },
+      {
+        $set: {
+          currentStage: toStage,
+        },
+      },
+      {
+        new: true,
+        runValidators: true,
+      },
+    );
+
+    if (!updatedContainer) {
+      return res.status(409).json({
+        message: "Stage already changed, please refresh.",
+      });
+    }
+
+    let clearanceEvent;
+
+    try {
+      // Record the successful stage transition.
+      clearanceEvent = await ClearanceEvent.create({
+        container: container._id,
+        fromStage,
+        toStage,
+        performedBy: req.user._id,
+        reason:
+          reason?.trim() ||
+          `Container moved from ${fromStage} to ${toStage}.`,
+      });
+    } catch (eventError) {
+      // Restore the previous stage if the event could not be recorded.
+      await Container.findOneAndUpdate(
+        {
+          _id: container._id,
+          currentStage: toStage,
+        },
+        {
+          $set: {
+            currentStage: fromStage,
+          },
+        },
+      );
+
+      throw eventError;
+    }
+
+    // Notify the importer and assigned agent about the stage change.
+    try {
+      await createEventNotifications({
+        recipientIds: [
+          container.importer,
+          container.assignedAgent,
+        ].filter(Boolean),
+
+        containerId: container._id,
+        type: "CLEARANCE_STAGE",
+
+        titleEnglish: "Clearance Stage Updated",
+        titleSomali: "Marxaladda Fasaxa Waa La Cusboonaysiiyay",
+
+        messageEnglish: `Container ${container.containerNumber} moved from ${fromStage} to ${toStage}.`,
+        messageSomali: `Konteenarka ${container.containerNumber} wuxuu ka gudbay ${fromStage} wuxuuna u gudbay ${toStage}.`,
+
+        sendSMS: true,
+      });
+    } catch (notificationError) {
+      // Notification failure must not undo a successful stage transition.
+      console.error(
+        "Clearance notification failed:",
+        notificationError.message,
+      );
+    }
+
+    // Send the clearance event to the Shipping Line webhook.
+    try {
+      await createAndSendWebhook(clearanceEvent._id);
+    } catch (webhookError) {
+      // Webhook failure must not undo a successful stage transition.
+      console.error(
+        "Clearance webhook failed:",
+        webhookError.message,
+      );
+    }
+
+    return res.status(200).json({
+      message: "Container stage updated successfully.",
+      container: updatedContainer,
+      clearanceEvent,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // PATCH /api/containers/:id/assign-agent
 // Importer only.
 // Accepts assignedAgent (an active Clearing Agent's ID).
-// Assigns or changes the Clearing Agent responsible for this container.
 router.patch(
   "/:id/assign-agent",
   AuthMiddleware,
@@ -291,7 +484,7 @@ router.patch(
       const { id } = req.params;
       const { assignedAgent } = req.body;
 
-      if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+      if (!/^[0-9a-fA-F]{24}$/.test(id)) {
         return res.status(400).json({
           message: "Invalid container ID.",
         });
@@ -303,7 +496,7 @@ router.patch(
         });
       }
 
-      if (!assignedAgent.match(/^[0-9a-fA-F]{24}$/)) {
+      if (!/^[0-9a-fA-F]{24}$/.test(assignedAgent)) {
         return res.status(400).json({
           message: "Invalid Clearing Agent ID.",
         });
