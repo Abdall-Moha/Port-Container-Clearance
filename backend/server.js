@@ -10,6 +10,8 @@ import BillOfLadingRoute from "./routes/BillOfLadingRoute.js";
 import ContainerRoute from "./routes/ContainerRoute.js";
 import DocumentRoute from "./routes/DocumentRoute.js";
 import DocumentVersionRoute from "./routes/DocumentVersionRoute.js";
+import ClearanceEventRoute from "./routes/ClearanceEventRoute.js";
+import DutyRateRoute from "./routes/DutyRateRoute.js";
 
 import {RateLimitingMiddleware} from "./middleware/RateLimitingMiddleware.js";
 import ErrorMiddleware from "./middleware/ErrorMiddleware.js";
@@ -35,6 +37,8 @@ app.use("/api/bills-of-lading", BillOfLadingRoute);
 app.use("/api/containers", ContainerRoute);
 app.use("/api/documents", DocumentRoute);
 app.use("/api/document-versions", DocumentVersionRoute);
+app.use("/api/clearance-events", ClearanceEventRoute);
+app.use("/api/duty-rates", DutyRateRoute);
 
 // Handles unknown routes.
 app.use((req, res, next) => {
