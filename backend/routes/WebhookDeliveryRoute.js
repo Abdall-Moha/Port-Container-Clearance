@@ -21,9 +21,7 @@ router.post(
   async (req, res) => {
     try {
       // Find the webhook delivery.
-      const delivery = await WebhookDelivery.findById(
-        req.params.id,
-      );
+      const delivery = await WebhookDelivery.findById(req.params.id);
 
       if (!delivery) {
         return res.status(404).json({
@@ -39,15 +37,29 @@ router.post(
         });
       }
 
-      // Start a new retry cycle without deleting previous attempt history.
-      delivery.retryCount = 0;
-      delivery.nextRetryAt = null;
-      delivery.status = "PENDING";
+      // Atomically start one new retry cycle without deleting attempt history.
+      const retryDelivery = await WebhookDelivery.findOneAndUpdate(
+        { _id: delivery._id, status: "FAILED" },
+        {
+          $set: {
+            retryCount: 0,
+            nextRetryAt: null,
+            status: "PENDING",
+            processingToken: null,
+            processingUntil: null,
+          },
+        },
+        { returnDocument: "after" },
+      );
 
-      await delivery.save();
+      if (!retryDelivery) {
+        return res.status(409).json({
+          message: "This webhook delivery has already been retried.",
+        });
+      }
 
       // Send the webhook again.
-      const updatedDelivery = await sendWebhookDelivery(delivery);
+      const updatedDelivery = await sendWebhookDelivery(retryDelivery);
 
       return res.status(200).json({
         message:

@@ -132,21 +132,31 @@ const inspectionPhotoUpload = multer({
 export function uploadSingleDocument(req, res, next) {
   documentUpload.single("file")(req, res, (error) => {
     if (error) {
-      if (error instanceof multer.MulterError) {
-        if (error.code === "LIMIT_FILE_SIZE") {
-          return res.status(413).json({
-            message: "File size cannot exceed 5 MB.",
+      // A Multer failure ends this upload's server-side work, so release its lease now.
+      const sendErrorResponse = () => {
+        if (error instanceof multer.MulterError) {
+          if (error.code === "LIMIT_FILE_SIZE") {
+            return res.status(413).json({
+              message: "File size cannot exceed 5 MB.",
+            });
+          }
+
+          return res.status(400).json({
+            message: error.message,
           });
         }
 
         return res.status(400).json({
           message: error.message,
         });
+      };
+
+      if (req.releaseDocumentUploadReservation) {
+        req.releaseDocumentUploadReservation().finally(sendErrorResponse);
+        return;
       }
 
-      return res.status(400).json({
-        message: error.message,
-      });
+      return sendErrorResponse();
     }
 
     next();

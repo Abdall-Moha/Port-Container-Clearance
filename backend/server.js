@@ -17,6 +17,7 @@ import InspectionRoute from "./routes/InspectionRoute.js";
 import WebhookDeliveryRoute from "./routes/WebhookDeliveryRoute.js";
 import ReleaseOrderRoute from "./routes/ReleaseOrderRoute.js";
 import NotificationRoute from "./routes/NotificationRoute.js";
+import { startWebhookRetryWorker } from "./services/WebhookRetryWorker.js";
 
 import {RateLimitingMiddleware} from "./middleware/RateLimitingMiddleware.js";
 import ErrorMiddleware from "./middleware/ErrorMiddleware.js";
@@ -64,6 +65,9 @@ app.use(ErrorMiddleware);
 async function startServer() {
   try {
     await connectDatabase();
+
+    // Start automatic webhook retries after the database is ready.
+    startWebhookRetryWorker();
 
     const PORT = process.env.PORT || 5000;
 

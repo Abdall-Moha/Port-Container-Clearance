@@ -193,7 +193,7 @@ router.patch(
       }
 
       const port = await Port.findByIdAndUpdate(id, updates, {
-        new: true,
+        returnDocument: "after",
         runValidators: true,
       });
 
@@ -241,7 +241,7 @@ router.patch(
       const port = await Port.findByIdAndUpdate(
         id,
         { isActive },
-        { new: true, runValidators: true },
+        { returnDocument: "after", runValidators: true },
       );
 
       if (!port) {

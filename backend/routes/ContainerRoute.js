@@ -5,12 +5,15 @@ import Container from "../models/Container.js";
 import BillOfLading from "../models/BillOfLading.js";
 import User from "../models/User.js";
 import ClearanceEvent from "../models/ClearanceEvent.js";
+import Document from "../models/Document.js";
+import DocumentVersion from "../models/DocumentVersion.js";
 
 import AuthMiddleware from "../middleware/AuthMiddleware.js";
 import RoleMiddleware from "../middleware/RoleMiddleware.js";
 
 import createEventNotifications from "../services/NotificationService.js";
 import { createAndSendWebhook } from "../services/WebhookService.js";
+import { publicTrackingRateLimit } from "../middleware/RateLimitingMiddleware.js";
 
 const router = express.Router();
 
@@ -23,10 +26,104 @@ const allowedTransitions = {
     CUSTOMS_REVIEW: ["CUSTOMS_OFFICER"],
   },
   CUSTOMS_REVIEW: {
-    DUTY_ASSESSED: ["CUSTOMS_OFFICER"],
     DOCUMENTS_SUBMITTED: ["CUSTOMS_OFFICER"],
   },
 };
+
+// Every document type must exist before the importer submits the container for review.
+const requiredDocumentTypes = [
+  "COMMERCIAL_INVOICE",
+  "PACKING_LIST",
+  "BILL_OF_LADING",
+  "CERTIFICATE_OF_ORIGIN",
+];
+
+// Validate the container number format and ISO 6346 check digit for public lookups.
+function isValidPublicContainerNumber(containerNumber) {
+  if (!/^[A-Z]{4}[0-9]{7}$/.test(containerNumber)) {
+    return false;
+  }
+
+  const letterValues = {
+    A: 10, B: 12, C: 13, D: 14, E: 15, F: 16, G: 17, H: 18, I: 19,
+    J: 20, K: 21, L: 23, M: 24, N: 25, O: 26, P: 27, Q: 28, R: 29,
+    S: 30, T: 31, U: 32, V: 34, W: 35, X: 36, Y: 37, Z: 38,
+  };
+
+  let sum = 0;
+
+  for (let index = 0; index < 10; index += 1) {
+    const character = containerNumber[index];
+    const value = Number.isNaN(Number(character))
+      ? letterValues[character]
+      : Number(character);
+    sum += value * 2 ** index;
+  }
+
+  const remainder = sum % 11;
+  const checkDigit = remainder === 10 ? 0 : remainder;
+
+  return checkDigit === Number(containerNumber[10]);
+}
+
+// Publicly return only clearance progress and a demurrage day estimate.
+router.get("/track", publicTrackingRateLimit, async (req, res, next) => {
+  try {
+    const containerNumber = String(req.query.containerNumber || "")
+      .trim()
+      .toUpperCase();
+
+    if (!isValidPublicContainerNumber(containerNumber)) {
+      return res.status(400).json({
+        message: "Please provide a valid container number.",
+      });
+    }
+
+    const container = await Container.findOne({ containerNumber })
+      .select("containerNumber currentStage arrivalDate")
+      .lean();
+
+    if (!container) {
+      return res.status(404).json({
+        message: "No container was found with that container number.",
+      });
+    }
+
+    const events = await ClearanceEvent.find({ container: container._id })
+      .select("toStage createdAt")
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const arrivalEvent = events.find((event) => event.toStage === "ARRIVED");
+    const collectionEvent = events.find((event) => event.toStage === "COLLECTED");
+    const arrivalTime = arrivalEvent?.createdAt || container.arrivalDate;
+    const endTime = collectionEvent?.createdAt || new Date();
+    const elapsedMilliseconds = Math.max(0, endTime - arrivalTime);
+    const elapsedDays = Math.floor(elapsedMilliseconds / (24 * 60 * 60 * 1000));
+    const chargeableDays = Math.max(0, elapsedDays - 7);
+
+    return res.status(200).json({
+      containerNumber: container.containerNumber,
+      currentStage: container.currentStage,
+      completedStages: events.map((event) => ({
+        stage: event.toStage,
+        completedAt: event.createdAt,
+      })),
+      demurrage: {
+        arrivalAt: arrivalTime,
+        collectedAt: collectionEvent?.createdAt || null,
+        elapsedDays,
+        freeDays: 7,
+        chargeableDays,
+        dailyRate: null,
+        estimatedFee: null,
+        feeStatus: "RATE_NOT_CONFIGURED",
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // POST /api/containers
 // Importer or Clearing Agent only.
@@ -159,24 +256,127 @@ router.post(
         agentId = agent._id;
       }
 
-      const container = await Container.create({
-        containerNumber: normalizedContainerNumber,
-        billOfLading: existingBL._id,
-        importer: existingBL.importer,
-        assignedAgent: agentId,
-        size,
-        cargoDescription: cargoDescription.trim(),
-        hsCode: hsCode.trim(),
-        cifValue: Number(cifValue),
-        arrivalDate: parsedArrivalDate,
-        currentStage: "ARRIVED",
-        status: "ACTIVE",
-        createdBy: req.user._id,
-      });
+      let container;
+      try {
+        container = await Container.create({
+          containerNumber: normalizedContainerNumber,
+          billOfLading: existingBL._id,
+          importer: existingBL.importer,
+          assignedAgent: agentId,
+          size,
+          cargoDescription: cargoDescription.trim(),
+          hsCode: hsCode.trim(),
+          cifValue: Number(cifValue),
+          arrivalDate: parsedArrivalDate,
+          currentStage: "ARRIVED",
+          status: "ACTIVE",
+          createdBy: req.user._id,
+        });
+      } catch (error) {
+        // The unique partial index is the final guard against concurrent registrations.
+        if (error.code === 11000) {
+          const activeContainer = await Container.findOne({
+            containerNumber: normalizedContainerNumber,
+            status: { $in: ["ACTIVE", "HELD"] },
+          });
+
+          return res.status(409).json({
+            message: "This container number already has an active clearance.",
+            existingContainerId: activeContainer?._id,
+          });
+        }
+
+        // A network error can happen after MongoDB saved the container.
+        try {
+          container = await Container.findOne({
+            containerNumber: normalizedContainerNumber,
+            billOfLading: existingBL._id,
+            createdBy: req.user._id,
+            status: "ACTIVE",
+          });
+        } catch (checkError) {
+          console.error("Could not verify container registration:", checkError.message);
+          throw error;
+        }
+
+        if (!container) throw error;
+
+        const existingArrivalEvent = await ClearanceEvent.exists({
+          container: container._id,
+          toStage: "ARRIVED",
+        });
+        if (existingArrivalEvent) {
+          return res.status(409).json({
+            message: "This container number already has an active clearance.",
+            existingContainerId: container._id,
+          });
+        }
+      }
+
+      let initialEvent;
+
+      try {
+        // Record the first stage so the clearance history starts at registration.
+        initialEvent = await ClearanceEvent.create({
+          container: container._id,
+          fromStage: null,
+          toStage: "ARRIVED",
+          performedBy: req.user._id,
+          reason: "Container registered and arrived for clearance.",
+        });
+      } catch (eventError) {
+        // Verify an uncertain write before removing the container.
+        let savedInitialEvent;
+        try {
+          savedInitialEvent = await ClearanceEvent.findOne({
+            container: container._id,
+            toStage: "ARRIVED",
+          });
+        } catch (checkError) {
+          // Keep the container if the event result cannot be checked safely.
+          console.error("Could not verify initial clearance event:", checkError.message);
+          throw eventError;
+        }
+
+        if (savedInitialEvent) {
+          initialEvent = savedInitialEvent;
+        } else {
+          // Without transactions, delete the container if its initial event was not saved.
+          try {
+            await Container.findByIdAndDelete(container._id);
+          } catch (rollbackError) {
+            console.error("Could not remove container after initial event failure:", rollbackError.message);
+          }
+          throw eventError;
+        }
+      }
+
+      // Send the same arrival notice and webhook used for later stage events.
+      try {
+        await createEventNotifications({
+          recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
+          containerId: container._id,
+          type: "CLEARANCE_STAGE",
+          titleEnglish: "Container Arrived",
+          titleSomali: "Konteenarku Wuu Yimid",
+          messageEnglish: `Container ${container.containerNumber} has been registered at the port.`,
+          messageSomali: `Konteenarka ${container.containerNumber} waxaa laga diiwaangeliyay dekedda.`,
+          sendSMS: true,
+        });
+      } catch (notificationError) {
+        console.error("Container arrival notification failed:", notificationError.message);
+      }
+
+      try {
+        await createAndSendWebhook(initialEvent._id);
+      } catch (webhookError) {
+        console.error("Container arrival webhook failed:", webhookError.message);
+      }
 
       return res.status(201).json({
         message: "Container registered successfully.",
         container,
+        clearanceEvent: initialEvent,
       });
     } catch (error) {
       next(error);
@@ -342,6 +542,14 @@ router.patch("/:id/stage", AuthMiddleware, async (req, res, next) => {
     }
 
     const fromStage = container.currentStage;
+
+    // Duty assessment also saves the exact rate snapshot, so it has its own endpoint.
+    if (fromStage === "CUSTOMS_REVIEW" && toStage === "DUTY_ASSESSED") {
+      return res.status(400).json({
+        message: "Use POST /api/payments/:containerId/assess to verify documents and save the duty assessment.",
+      });
+    }
+
     const allowedRoles = allowedTransitions[fromStage]?.[toStage];
 
     // Reject transitions that are not part of the clearance workflow.
@@ -371,19 +579,82 @@ router.patch("/:id/stage", AuthMiddleware, async (req, res, next) => {
       });
     }
 
+    // Submission requires a saved latest version; Customs approval is checked during assessment.
+    if (fromStage === "ARRIVED" && toStage === "DOCUMENTS_SUBMITTED") {
+      const documents = await Document.find({
+        container: container._id,
+        documentType: { $in: requiredDocumentTypes },
+      });
+      const incompleteDocumentTypes = [];
+
+      for (const documentType of requiredDocumentTypes) {
+        const document = documents.find(
+          (item) => item.documentType === documentType,
+        );
+
+        if (!document) {
+          incompleteDocumentTypes.push(documentType);
+          continue;
+        }
+
+        if (
+          !Number.isInteger(document.latestVersion) ||
+          document.latestVersion < 1
+        ) {
+          incompleteDocumentTypes.push(documentType);
+          continue;
+        }
+
+        // The document is scoped to this container and the version must point back to it.
+        const latestVersion = await DocumentVersion.findOne({
+          document: document._id,
+        })
+          .sort({ versionNumber: -1 })
+          .select("document versionNumber");
+
+        if (
+          !latestVersion ||
+          !latestVersion.document.equals(document._id) ||
+          latestVersion.versionNumber !== document.latestVersion
+        ) {
+          incompleteDocumentTypes.push(documentType);
+        }
+      }
+
+      if (incompleteDocumentTypes.length > 0) {
+        return res.status(400).json({
+          message: "All required documents must have a saved latest version before submission.",
+          incompleteDocumentTypes,
+        });
+      }
+    }
+
     // Update only if the stage has not changed since it was retrieved.
+    const stageUpdateFilter = {
+      _id: id,
+      currentStage: fromStage,
+    };
+
+    // Do not begin Customs review while a valid upload is still being processed.
+    if (toStage === "CUSTOMS_REVIEW") {
+      stageUpdateFilter.documentUploadReservations = {
+        $not: {
+          $elemMatch: {
+            expiresAt: { $gt: new Date() },
+          },
+        },
+      };
+    }
+
     const updatedContainer = await Container.findOneAndUpdate(
-      {
-        _id: id,
-        currentStage: fromStage,
-      },
+      stageUpdateFilter,
       {
         $set: {
           currentStage: toStage,
         },
       },
       {
-        new: true,
+        returnDocument: "after",
         runValidators: true,
       },
     );

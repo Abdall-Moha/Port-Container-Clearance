@@ -125,6 +125,18 @@ const webhookDeliverySchema = new mongoose.Schema(
       default: null,
     },
 
+    // Identifies the worker currently sending this delivery and expires after a crash.
+    processingToken: {
+      type: String,
+      default: null,
+    },
+
+    // Allows another worker to reclaim a delivery after its sender stops unexpectedly.
+    processingUntil: {
+      type: Date,
+      default: null,
+    },
+
     // HTTP status returned by the latest attempt.
     responseStatus: {
       type: Number,

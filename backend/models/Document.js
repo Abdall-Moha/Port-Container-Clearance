@@ -28,6 +28,13 @@ const documentSchema = new mongoose.Schema(
       min: 0,
     },
 
+    // Allocates unique version numbers without moving latestVersion before a version exists.
+    nextVersion: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
     reviewStatus: {
       type: String,
       enum: ["PENDING", "APPROVED", "REJECTED"],

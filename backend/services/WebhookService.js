@@ -1,31 +1,86 @@
+import { randomUUID } from "node:crypto";
+
 import WebhookDelivery from "../models/WebhookDelivery.js";
 import ClearanceEvent from "../models/ClearanceEvent.js";
 import Container from "../models/Container.js";
 
 // Retry delays after unsuccessful attempts, in minutes.
 const RETRY_DELAYS = [1, 2, 4];
+const WEBHOOK_TIMEOUT_MS = 10000;
+const WEBHOOK_LEASE_MS = 60000;
 
-// Send a webhook and save the result of every attempt.
-export async function sendWebhookDelivery(delivery) {
-  // Do not send a webhook that is already delivered or being sent.
-  if (
-    delivery.status === "DELIVERED" ||
-    delivery.status === "SENDING"
-  ) {
-    return delivery;
+// Atomically claim one delivery whose retry time has arrived.
+export async function claimDueWebhookDelivery() {
+  const now = new Date();
+  const token = randomUUID();
+
+  const pendingDelivery = await WebhookDelivery.findOneAndUpdate(
+    {
+      status: "PENDING",
+      retryCount: { $lt: 4 },
+      $or: [{ nextRetryAt: null }, { nextRetryAt: { $lte: now } }],
+    },
+    {
+      $set: {
+        status: "SENDING",
+        processingToken: token,
+        processingUntil: new Date(now.getTime() + WEBHOOK_LEASE_MS),
+        lastAttemptAt: now,
+        nextRetryAt: null,
+      },
+      $inc: { attempts: 1, retryCount: 1 },
+    },
+    { returnDocument: "after", sort: { nextRetryAt: 1, createdAt: 1 } },
+  );
+
+  if (pendingDelivery) {
+    return pendingDelivery;
   }
 
-  // Mark the delivery as being sent before making the request.
-  delivery.attempts += 1;
-  delivery.retryCount += 1;
-  delivery.lastAttemptAt = new Date();
-  delivery.status = "SENDING";
-  delivery.nextRetryAt = null;
+  // A crashed final attempt is no longer retried because the four-attempt cycle is exhausted.
+  await WebhookDelivery.updateMany(
+    {
+      status: "SENDING",
+      retryCount: 4,
+      processingUntil: { $lte: now },
+    },
+    {
+      $set: {
+        status: "FAILED",
+        nextRetryAt: null,
+        processingToken: null,
+        processingUntil: null,
+        errorMessage: "The final webhook attempt ended without a saved result.",
+      },
+    },
+  );
 
-  await delivery.save();
+  // Reclaim a sender that crashed or stopped renewing its short processing lease.
+  return await WebhookDelivery.findOneAndUpdate(
+    {
+      status: "SENDING",
+      retryCount: { $gte: 1, $lt: 4 },
+      processingUntil: { $lte: now },
+    },
+    {
+      $set: {
+        processingToken: token,
+        processingUntil: new Date(now.getTime() + WEBHOOK_LEASE_MS),
+        lastAttemptAt: now,
+      },
+    },
+    { returnDocument: "after", sort: { processingUntil: 1, createdAt: 1 } },
+  );
+}
+
+// Send one already-claimed delivery and save the result only while this worker owns it.
+export async function processClaimedWebhookDelivery(delivery) {
+  const token = delivery.processingToken;
+  const attemptAt = delivery.lastAttemptAt || new Date();
+  let attempt;
 
   try {
-    // Send the event to the configured shipping line endpoint.
+    // Send the event to the configured shipping line endpoint with a firm timeout.
     const response = await fetch(delivery.webhookUrl, {
       method: "POST",
       headers: {
@@ -33,96 +88,126 @@ export async function sendWebhookDelivery(delivery) {
         "X-Webhook-Event-Id": delivery.eventId,
       },
       body: JSON.stringify(delivery.payload),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
 
-    // Read the response returned by the receiving system.
-    const responseBody = await response.text();
-
-    const savedResponseBody = responseBody.slice(0, 1000);
-
-    // Record this individual delivery attempt.
-    delivery.attemptHistory.push({
+    const responseBody = (await response.text()).slice(0, 1000);
+    attempt = {
       attemptNumber: delivery.attempts,
-      attemptedAt: delivery.lastAttemptAt,
+      attemptedAt: attemptAt,
       outcome: response.ok ? "SUCCESS" : "FAILED",
       responseStatus: response.status,
-      responseBody: savedResponseBody,
+      responseBody,
       errorMessage: response.ok
         ? ""
         : `Receiving system returned HTTP ${response.status}.`,
-    });
+    };
 
-    delivery.responseStatus = response.status;
-    delivery.responseBody = savedResponseBody;
-
-    // Mark the delivery successful if the receiving system responds with 2xx.
     if (response.ok) {
-      delivery.status = "DELIVERED";
-      delivery.deliveredAt = new Date();
-      delivery.nextRetryAt = null;
-      delivery.errorMessage = "";
-    } else {
-      // Schedule another attempt or mark the delivery as failed.
-      scheduleNextRetry(delivery);
+      return await WebhookDelivery.findOneAndUpdate(
+        { _id: delivery._id, status: "SENDING", processingToken: token },
+        {
+          $set: {
+            status: "DELIVERED",
+            deliveredAt: new Date(),
+            nextRetryAt: null,
+            responseStatus: response.status,
+            responseBody,
+            errorMessage: "",
+            processingToken: null,
+            processingUntil: null,
+          },
+          $push: { attemptHistory: attempt },
+        },
+        { returnDocument: "after" },
+      );
     }
 
-    await delivery.save();
-
-    return delivery;
+    return await saveFailedWebhookAttempt(delivery, attempt);
   } catch (error) {
-    // Record the failed attempt if the request could not be completed.
-    delivery.attemptHistory.push({
+    attempt = {
       attemptNumber: delivery.attempts,
-      attemptedAt: delivery.lastAttemptAt,
+      attemptedAt: attemptAt,
       outcome: "FAILED",
       responseStatus: null,
       responseBody: "",
       errorMessage: error.message,
-    });
+    };
 
-    delivery.responseStatus = null;
-    delivery.responseBody = "";
-    delivery.errorMessage = error.message;
+    return await saveFailedWebhookAttempt(delivery, attempt);
+  }
+}
 
-    // Schedule another attempt or mark the delivery as failed.
-    scheduleNextRetry(delivery);
+// Save a failed attempt and either schedule its next delay or finish the retry cycle.
+async function saveFailedWebhookAttempt(delivery, attempt) {
+  const isFinalAttempt = delivery.retryCount >= 4;
+  const delayMinutes = RETRY_DELAYS[delivery.retryCount - 1];
+  const nextRetryAt = isFinalAttempt
+    ? null
+    : new Date(Date.now() + delayMinutes * 60 * 1000);
 
-    await delivery.save();
+  return await WebhookDelivery.findOneAndUpdate(
+    {
+      _id: delivery._id,
+      status: "SENDING",
+      processingToken: delivery.processingToken,
+    },
+    {
+      $set: {
+        status: isFinalAttempt ? "FAILED" : "PENDING",
+        nextRetryAt,
+        responseStatus: attempt.responseStatus,
+        responseBody: attempt.responseBody,
+        errorMessage: attempt.errorMessage,
+        processingToken: null,
+        processingUntil: null,
+      },
+      $push: { attemptHistory: attempt },
+    },
+    { returnDocument: "after" },
+  );
+}
 
+// Claim a pending delivery and perform its initial or scheduled attempt.
+export async function sendWebhookDelivery(delivery) {
+  if (!delivery || delivery.status === "DELIVERED") {
     return delivery;
   }
-}
 
-// Schedule the next automatic retry after an unsuccessful attempt.
-function scheduleNextRetry(delivery) {
-  if (delivery.retryCount >= 4) {
-    delivery.status = "FAILED";
-    delivery.nextRetryAt = null;
-    return;
+  const claimedDelivery = await WebhookDelivery.findOneAndUpdate(
+    {
+      _id: delivery._id,
+      status: "PENDING",
+      retryCount: { $lt: 4 },
+    },
+    {
+      $set: {
+        status: "SENDING",
+        processingToken: randomUUID(),
+        processingUntil: new Date(Date.now() + WEBHOOK_LEASE_MS),
+        lastAttemptAt: new Date(),
+        nextRetryAt: null,
+      },
+      $inc: { attempts: 1, retryCount: 1 },
+    },
+    { returnDocument: "after" },
+  );
+
+  if (!claimedDelivery) {
+    return await WebhookDelivery.findById(delivery._id);
   }
 
-  const delayMinutes = RETRY_DELAYS[delivery.retryCount - 1];
-
-  delivery.status = "PENDING";
-
-  delivery.nextRetryAt = new Date(
-    Date.now() + delayMinutes * 60 * 1000,
-  );
+  return await processClaimedWebhookDelivery(claimedDelivery);
 }
 
-// Find a clearance event, create its webhook delivery, and send it.
+// Find a clearance event, create its webhook delivery, and send its first attempt.
 export async function createAndSendWebhook(clearanceEventId) {
-  // Find the clearance event that triggered the webhook.
-  const clearanceEvent = await ClearanceEvent.findById(
-    clearanceEventId,
-  );
+  const clearanceEvent = await ClearanceEvent.findById(clearanceEventId);
 
   if (!clearanceEvent) {
     throw new Error("Clearance event not found.");
   }
 
-  // Prevent the same clearance event from creating another delivery.
   const existingDelivery = await WebhookDelivery.findOne({
     eventId: String(clearanceEvent._id),
   });
@@ -131,14 +216,9 @@ export async function createAndSendWebhook(clearanceEventId) {
     return existingDelivery;
   }
 
-  // Find the container and its shipping line.
-  const container = await Container.findById(
-    clearanceEvent.container,
-  ).populate({
+  const container = await Container.findById(clearanceEvent.container).populate({
     path: "billOfLading",
-    populate: {
-      path: "shippingLine",
-    },
+    populate: { path: "shippingLine" },
   });
 
   if (!container || !container.billOfLading) {
@@ -147,17 +227,10 @@ export async function createAndSendWebhook(clearanceEventId) {
 
   const shippingLine = container.billOfLading.shippingLine;
 
-  // Do not send an event if the shipping line is inactive.
-  if (!shippingLine || !shippingLine.isActive) {
+  if (!shippingLine || !shippingLine.isActive || !shippingLine.webhookUrl) {
     return null;
   }
 
-  // Check whether the shipping line has configured a webhook URL.
-  if (!shippingLine.webhookUrl) {
-    return null;
-  }
-
-  // Create the information sent to the receiving system.
   const payload = {
     eventId: String(clearanceEvent._id),
     containerNumber: container.containerNumber,
@@ -166,7 +239,6 @@ export async function createAndSendWebhook(clearanceEventId) {
     time: clearanceEvent.createdAt,
   };
 
-  // Create the delivery record before sending the webhook.
   const delivery = await WebhookDelivery.create({
     shippingLine: shippingLine._id,
     container: container._id,
@@ -176,6 +248,5 @@ export async function createAndSendWebhook(clearanceEventId) {
     payload,
   });
 
-  // Send the newly created webhook delivery.
   return await sendWebhookDelivery(delivery);
 }

@@ -24,5 +24,15 @@ const loginRateLimit = rateLimit({
   },
 });
 
+// Limits public container tracking requests to 10 per IP address each minute.
+const publicTrackingRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: {
+    message: "Too many tracking requests. Please try again in one minute.",
+  },
+});
 
-export { loginRateLimit, RateLimitingMiddleware };
+export { loginRateLimit, publicTrackingRateLimit, RateLimitingMiddleware };

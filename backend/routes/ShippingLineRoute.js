@@ -262,7 +262,7 @@ router.patch(
       const shippingLine = await ShippingLine.findByIdAndUpdate(
         id,
         updates,
-        { new: true, runValidators: true },
+        { returnDocument: "after", runValidators: true },
       );
 
       if (!shippingLine) {
@@ -309,7 +309,7 @@ router.patch(
       const shippingLine = await ShippingLine.findByIdAndUpdate(
         id,
         { isActive },
-        { new: true, runValidators: true },
+        { returnDocument: "after", runValidators: true },
       );
 
       if (!shippingLine) {

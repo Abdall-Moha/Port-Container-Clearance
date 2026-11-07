@@ -214,6 +214,30 @@ router.patch(
         });
       }
 
+      // Document reviews belong to the Customs Review stage and must stop before assessment.
+      if (container.currentStage !== "CUSTOMS_REVIEW") {
+        return res.status(409).json({
+          message: "Documents can only be reviewed while the container is in CUSTOMS_REVIEW.",
+          currentStage: container.currentStage,
+        });
+      }
+
+      // Do not review an older pointer if a saved version was left unfinalized.
+      const newestSavedVersion = await DocumentVersion.findOne({
+        document: document._id,
+      })
+        .sort({ versionNumber: -1 })
+        .select("versionNumber");
+
+      if (
+        !newestSavedVersion ||
+        newestSavedVersion.versionNumber !== document.latestVersion
+      ) {
+        return res.status(409).json({
+          message: "The latest saved document version is not finalized. Upload the document again before review.",
+        });
+      }
+
       // Never allow an Officer to review an older version.
       if (document.latestVersion !== versionNumber) {
         return res.status(409).json({
@@ -244,7 +268,7 @@ router.patch(
           },
         },
         {
-          new: true,
+          returnDocument: "after",
           runValidators: true,
         },
       );

@@ -1,6 +1,30 @@
 
 import mongoose from "mongoose";
 
+// Keeps the exact duty rate and calculated amount used for this container.
+// This snapshot is saved once so later rate changes cannot alter the amount due.
+const dutyAssessmentSchema = new mongoose.Schema(
+  {
+    dutyRate: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "DutyRate",
+      required: true,
+    },
+    hsChapter: { type: String, required: true },
+    cifValue: { type: Number, required: true, min: 0.01 },
+    dutyPercentage: { type: Number, required: true, min: 0, max: 100 },
+    portFee: { type: Number, required: true, min: 0 },
+    amount: { type: Number, required: true, min: 0 },
+    assessedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+    assessedAt: { type: Date, required: true },
+  },
+  { _id: false },
+);
+
 // Validates a container number using the ISO 6346 check digit algorithm.
 // Receives a container number such as MSKU1234566.
 // Returns true if the format and check digit are correct.
@@ -116,6 +140,24 @@ const containerSchema = new mongoose.Schema(
       default: "ARRIVED",
     },
 
+    // The confirmed duty calculation. It stays unchanged if an Admin later edits rates.
+    dutyAssessment: {
+      type: dutyAssessmentSchema,
+      default: undefined,
+    },
+
+    // Active document upload leases prevent review or assessment from overtaking an upload.
+    // Each lease expires automatically if the server stops before it can release it.
+    documentUploadReservations: {
+      type: [
+        {
+          reservationId: { type: String, required: true },
+          expiresAt: { type: Date, required: true },
+        },
+      ],
+      default: [],
+    },
+
     status: {
       type: String,
       enum: ["ACTIVE", "HELD", "COMPLETED"],
@@ -130,6 +172,17 @@ const containerSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
+  },
+);
+
+// Prevent duplicate active clearances while allowing completed containers to be registered again.
+containerSchema.index(
+  { containerNumber: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: { $in: ["ACTIVE", "HELD"] },
+    },
   },
 );
 

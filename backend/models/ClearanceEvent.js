@@ -63,6 +63,24 @@ clearanceEventSchema.index({
   createdAt: 1,
 });
 
+// A container can have only one initial ARRIVED event, even if registration is retried.
+clearanceEventSchema.index(
+  { container: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { toStage: "ARRIVED" },
+  },
+);
+
+// A container can have only one DUTY_PAID transition event.
+clearanceEventSchema.index(
+  { container: 1, toStage: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { toStage: "DUTY_PAID" },
+  },
+);
+
 const ClearanceEvent = mongoose.model(
   "ClearanceEvent",
   clearanceEventSchema,

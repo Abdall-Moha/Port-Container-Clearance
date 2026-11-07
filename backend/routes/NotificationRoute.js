@@ -93,7 +93,7 @@ router.patch("/:id/read", AuthMiddleware, async (req, res, next) => {
         readAt: new Date(),
       },
       {
-        new: true,
+        returnDocument: "after",
         runValidators: true,
       }
     );

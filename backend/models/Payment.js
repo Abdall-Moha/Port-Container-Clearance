@@ -114,6 +114,17 @@ paymentSchema.index(
   },
 );
 
+// One pending payment per container acts as a recoverable payment-operation lock.
+paymentSchema.index(
+  { container: 1, status: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: "PENDING",
+    },
+  },
+);
+
 const Payment = mongoose.model("Payment", paymentSchema);
 
 export default Payment;

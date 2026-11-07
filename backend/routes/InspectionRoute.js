@@ -2,6 +2,7 @@ import express from "express";
 import fs from "fs";
 import Inspection from "../models/Inspection.js";
 import Container from "../models/Container.js";
+import Payment from "../models/Payment.js";
 import User from "../models/User.js";
 import ClearanceEvent from "../models/ClearanceEvent.js";
 import createEventNotifications from "../services/NotificationService.js";
@@ -188,6 +189,25 @@ router.post(
         });
       }
 
+      // Do not begin inspection until the payment saga has completed its database records.
+      if (isInitialInspection) {
+        const successfulPayment = await Payment.exists({
+          container: container._id,
+          status: "SUCCESS",
+        });
+        const paymentEvent = await ClearanceEvent.exists({
+          container: container._id,
+          fromStage: "DUTY_ASSESSED",
+          toStage: "DUTY_PAID",
+        });
+
+        if (!successfulPayment || !paymentEvent) {
+          return res.status(409).json({
+            message: "Payment finalization is still in progress. Please try again shortly.",
+          });
+        }
+      }
+
       // Calculate the next inspection attempt number.
       const previousAttempts = await Inspection.countDocuments({
         container: container._id,
@@ -227,7 +247,7 @@ router.post(
               },
         },
         {
-          new: true,
+          returnDocument: "after",
         },
       );
 
@@ -436,7 +456,7 @@ router.patch(
                 },
         },
         {
-          new: true,
+          returnDocument: "after",
         },
       );
 
