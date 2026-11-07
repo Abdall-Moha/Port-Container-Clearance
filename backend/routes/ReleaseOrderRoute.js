@@ -86,6 +86,10 @@ router.post(
         });
       }
 
+      if (container.status === "INACTIVE") {
+        return res.status(409).json({ message: "A release order cannot be created for an inactive container." });
+      }
+
       // The container must already be released.
       if (container.currentStage !== "RELEASED") {
         return res.status(409).json({
@@ -272,6 +276,10 @@ router.patch(
         });
       }
 
+      if (container.status === "INACTIVE") {
+        return res.status(409).json({ message: "An inactive container cannot be collected." });
+      }
+
       // Only the assigned Clearing Agent can collect this container.
       if (
         String(container.assignedAgent) !== String(req.user._id)
@@ -317,6 +325,7 @@ router.patch(
         {
           _id: container._id,
           currentStage: "RELEASED",
+          status: "ACTIVE",
         },
         {
           $set: {
@@ -476,6 +485,11 @@ router.patch(
         });
       }
 
+      const container = await Container.findById(releaseOrder.container).select("status");
+      if (container?.status === "INACTIVE") {
+        return res.status(409).json({ message: "Operational release-order changes are blocked for an inactive container." });
+      }
+
       // Do not revoke an order that has already been revoked.
       if (releaseOrder.isRevoked) {
         return res.status(409).json({
@@ -501,18 +515,18 @@ router.patch(
       await releaseOrder.save();
 
       // Notify the importer and assigned agent that the release order was revoked.
-      const container = await Container.findById(releaseOrder.container);
+      const notificationContainer = await Container.findById(releaseOrder.container);
 
-      if (container) {
+      if (notificationContainer) {
         try {
           await createEventNotifications({
-            recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
-            containerId: container._id,
+            recipientIds: [notificationContainer.importer, notificationContainer.assignedAgent].filter(Boolean),
+            containerId: notificationContainer._id,
             type: "RELEASE_ORDER",
             titleEnglish: "Release Order Revoked",
             titleSomali: "Amarka Sii-daynta Waa La Laalay",
-            messageEnglish: `The release order for container ${container.containerNumber} has been revoked. Reason: ${reason.trim()}`,
-            messageSomali: `Amarkii sii-daynta ee konteenarka ${container.containerNumber} waa la laalay. Sababta: ${reason.trim()}`,
+            messageEnglish: `The release order for container ${notificationContainer.containerNumber} has been revoked. Reason: ${reason.trim()}`,
+            messageSomali: `Amarkii sii-daynta ee konteenarka ${notificationContainer.containerNumber} waa la laalay. Sababta: ${reason.trim()}`,
             sendSMS: true,
           });
         } catch (notificationError) {
@@ -551,11 +565,22 @@ router.get(
       // Find the release order.
       const releaseOrder = await ReleaseOrder.findById(
         req.params.id,
-      ).populate("container", "containerNumber");
+      ).populate("container", "containerNumber status");
 
       if (!releaseOrder || !releaseOrder.container) {
         return res.status(404).json({
           message: "Release order not found.",
+        });
+      }
+
+      if (releaseOrder.container.status === "INACTIVE") {
+        return res.status(200).json({
+          releaseOrderId: releaseOrder._id,
+          containerNumber: releaseOrder.container.containerNumber,
+          isValid: false,
+          isRevoked: releaseOrder.isRevoked,
+          isCollected: releaseOrder.gateCodeUsed,
+          message: "This release order is not operationally valid.",
         });
       }
 

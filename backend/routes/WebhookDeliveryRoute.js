@@ -1,6 +1,7 @@
 import express from "express";
 
 import WebhookDelivery from "../models/WebhookDelivery.js";
+import Container from "../models/Container.js";
 import { sendWebhookDelivery } from "../services/WebhookService.js";
 
 import AuthMiddleware from "../middleware/AuthMiddleware.js";
@@ -35,6 +36,11 @@ router.post(
           message: "Only failed webhook deliveries can be resent.",
           status: delivery.status,
         });
+      }
+
+      const container = await Container.findById(delivery.container).select("status");
+      if (container?.status === "INACTIVE") {
+        return res.status(409).json({ message: "A webhook for an inactive container cannot be resent." });
       }
 
       // Atomically start one new retry cycle without deleting attempt history.

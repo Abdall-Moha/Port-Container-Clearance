@@ -75,6 +75,7 @@ export async function claimDueWebhookDelivery() {
 
 // Send one already-claimed delivery and save the result only while this worker owns it.
 export async function processClaimedWebhookDelivery(delivery) {
+  if (await suppressInactiveContainerDelivery(delivery)) return await WebhookDelivery.findById(delivery._id);
   const token = delivery.processingToken;
   const attemptAt = delivery.lastAttemptAt || new Date();
   let attempt;
@@ -174,6 +175,8 @@ export async function sendWebhookDelivery(delivery) {
     return delivery;
   }
 
+  if (await suppressInactiveContainerDelivery(delivery)) return await WebhookDelivery.findById(delivery._id);
+
   const claimedDelivery = await WebhookDelivery.findOneAndUpdate(
     {
       _id: delivery._id,
@@ -225,6 +228,8 @@ export async function createAndSendWebhook(clearanceEventId) {
     throw new Error("Container or Bill of Lading not found.");
   }
 
+  if (container.status === "INACTIVE") return null;
+
   const shippingLine = container.billOfLading.shippingLine;
 
   if (!shippingLine || !shippingLine.isActive || !shippingLine.webhookUrl) {
@@ -249,4 +254,23 @@ export async function createAndSendWebhook(clearanceEventId) {
   });
 
   return await sendWebhookDelivery(delivery);
+}
+
+// Stop queued webhook work for an inactive container while retaining its delivery history.
+async function suppressInactiveContainerDelivery(delivery) {
+  const container = await Container.findById(delivery.container).select("status");
+  if (!container || container.status !== "INACTIVE") return false;
+  await WebhookDelivery.updateOne(
+    { _id: delivery._id, status: { $in: ["PENDING", "SENDING"] } },
+    {
+      $set: {
+        status: "FAILED",
+        nextRetryAt: null,
+        processingToken: null,
+        processingUntil: null,
+        errorMessage: "Delivery stopped because the container is inactive.",
+      },
+    },
+  );
+  return true;
 }

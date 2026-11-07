@@ -169,6 +169,55 @@ router.post(
   },
 );
 
+// GET /api/users/active-importers
+// Clearing Agents only. Return active Importer names and IDs for Bill of Lading creation.
+router.get(
+  "/active-importers",
+  AuthMiddleware,
+  RoleMiddleware("CLEARING_AGENT"),
+  async (req, res, next) => {
+    try {
+      const users = await User.find({
+        role: "IMPORTER",
+        isActive: true,
+      })
+        .select("_id fullName")
+        .sort({ fullName: 1 })
+        .lean();
+
+      return res.status(200).json({
+        count: users.length,
+        users,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// GET /api/users/active-clearing-agents
+// Importers only. Return active Clearing Agent names and IDs for assignment.
+router.get(
+  "/active-clearing-agents",
+  AuthMiddleware,
+  RoleMiddleware("IMPORTER"),
+  async (req, res, next) => {
+    try {
+      const users = await User.find({
+        role: "CLEARING_AGENT",
+        isActive: true,
+      })
+        .select("_id fullName")
+        .sort({ fullName: 1 })
+        .lean();
+
+      return res.status(200).json({ count: users.length, users });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 // GET /api/users
 // Admin only.
 // Optionally accepts ?role=IMPORTER to filter users by role.

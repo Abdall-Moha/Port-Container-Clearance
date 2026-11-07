@@ -117,6 +117,7 @@ async function renewDocumentUploadReservation(req) {
     {
       _id: reservation.containerId,
       currentStage: { $in: documentUploadStages },
+      status: { $ne: "INACTIVE" },
       documentUploadReservations: {
         $elemMatch: {
           reservationId: reservation.reservationId,
@@ -254,6 +255,10 @@ async function reserveDocumentUpload(req, res, next) {
       return res.status(404).json({ message: "Container not found." });
     }
 
+    if (container.status === "INACTIVE") {
+      return res.status(409).json({ message: "Documents cannot be uploaded for an inactive container." });
+    }
+
     if (!canAccessContainer(req.user, container)) {
       return res.status(403).json({
         message: "You are not allowed to upload documents for this container.",
@@ -284,6 +289,7 @@ async function reserveDocumentUpload(req, res, next) {
       {
         _id: containerId,
         currentStage: { $in: documentUploadStages },
+        status: { $ne: "INACTIVE" },
       },
       {
         $push: {
@@ -398,6 +404,11 @@ router.post(
         return res.status(404).json({
           message: "Container not found.",
         });
+      }
+
+      if (container.status === "INACTIVE") {
+        await deleteUploadedFile(savedFilePath);
+        return res.status(409).json({ message: "Documents cannot be uploaded for an inactive container." });
       }
 
       // Check whether this user owns or is assigned to the container.

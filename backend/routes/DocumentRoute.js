@@ -214,6 +214,10 @@ router.patch(
         });
       }
 
+      if (container.status === "INACTIVE") {
+        return res.status(409).json({ message: "Documents cannot be reviewed for an inactive container." });
+      }
+
       // Document reviews belong to the Customs Review stage and must stop before assessment.
       if (container.currentStage !== "CUSTOMS_REVIEW") {
         return res.status(409).json({

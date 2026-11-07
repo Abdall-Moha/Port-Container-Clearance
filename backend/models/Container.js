@@ -160,7 +160,7 @@ const containerSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["ACTIVE", "HELD", "COMPLETED"],
+      enum: ["ACTIVE", "HELD", "COMPLETED", "INACTIVE"],
       default: "ACTIVE",
     },
 

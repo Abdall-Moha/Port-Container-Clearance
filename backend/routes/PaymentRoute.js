@@ -118,6 +118,7 @@ router.post(
 
       const container = await Container.findById(containerId);
       if (!container) return res.status(404).json({ message: "Container not found." });
+      if (container.status === "INACTIVE") return res.status(409).json({ message: "Duty cannot be assessed for an inactive container." });
       if (container.currentStage !== "CUSTOMS_REVIEW") {
         return res.status(409).json({
           message: "Duty can only be assessed while the container is in CUSTOMS_REVIEW.",
@@ -193,6 +194,7 @@ router.post(
         {
           _id: container._id,
           currentStage: "CUSTOMS_REVIEW",
+          status: "ACTIVE",
           // Assessment waits until every active document upload finishes or expires.
           documentUploadReservations: {
             $not: {
@@ -348,6 +350,10 @@ router.get(
         });
       }
 
+      if (container.status === "INACTIVE") {
+        return res.status(409).json({ message: "Payment is unavailable for an inactive container." });
+      }
+
       // Check whether the user owns or is assigned to the container.
       if (!canAccessContainer(req.user, container)) {
         return res.status(403).json({
@@ -450,6 +456,10 @@ router.post(
         return res.status(404).json({
           message: "Container not found.",
         });
+      }
+
+      if (container.status === "INACTIVE") {
+        return res.status(409).json({ message: "Payment is unavailable for an inactive container." });
       }
 
       // Check container ownership or assignment.
@@ -612,6 +622,7 @@ router.post(
           {
             _id: container._id,
             currentStage: "DUTY_ASSESSED",
+            status: "ACTIVE",
           },
           { $set: { currentStage: "DUTY_PAID" } },
           { returnDocument: "after" },

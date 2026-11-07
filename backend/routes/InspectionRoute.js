@@ -174,6 +174,10 @@ router.post(
         });
       }
 
+      if (container.status === "INACTIVE") {
+        return res.status(409).json({ message: "An inactive container cannot be scheduled for inspection." });
+      }
+
       // Initial inspection: payment must already be completed.
       const isInitialInspection = container.currentStage === "DUTY_PAID";
 
@@ -230,6 +234,7 @@ router.post(
           ? {
               _id: container._id,
               currentStage: "DUTY_PAID",
+              status: "ACTIVE",
             }
           : {
               _id: container._id,

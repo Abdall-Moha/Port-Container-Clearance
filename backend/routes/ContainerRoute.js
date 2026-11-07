@@ -79,7 +79,7 @@ router.get("/track", publicTrackingRateLimit, async (req, res, next) => {
       });
     }
 
-    const container = await Container.findOne({ containerNumber })
+    const container = await Container.findOne({ containerNumber, status: { $ne: "INACTIVE" } })
       .select("containerNumber currentStage arrivalDate")
       .lean();
 
@@ -492,6 +492,172 @@ router.get("/:id", AuthMiddleware, async (req, res, next) => {
   }
 });
 
+// PATCH /api/containers/:id
+// Importers may edit their own registrations; Admins may edit any container.
+router.patch(
+  "/:id",
+  AuthMiddleware,
+  RoleMiddleware("IMPORTER", "ADMIN"),
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const allowedFields = [
+        "containerNumber", "billOfLading", "size", "cargoDescription",
+        "hsCode", "cifValue", "arrivalDate", "assignedAgent",
+      ];
+      if (!/^[0-9a-fA-F]{24}$/.test(id)) {
+        return res.status(400).json({ message: "Invalid container ID." });
+      }
+      const unexpectedFields = Object.keys(req.body).filter((key) => !allowedFields.includes(key));
+      if (unexpectedFields.length) {
+        return res.status(400).json({ message: "One or more fields cannot be changed through this endpoint." });
+      }
+      if (Object.keys(req.body).length === 0) {
+        return res.status(400).json({ message: "Provide at least one editable container field." });
+      }
+      const container = await Container.findById(id);
+      if (!container) return res.status(404).json({ message: "Container not found." });
+      if (req.user.role === "IMPORTER" &&
+        (!container.createdBy.equals(req.user._id) || !container.importer.equals(req.user._id))) {
+        return res.status(403).json({ message: "You can only edit containers you registered for your own account." });
+      }
+      if (container.status === "INACTIVE") {
+        return res.status(409).json({ message: "An inactive container cannot be edited." });
+      }
+      if (container.status === "COMPLETED" || container.currentStage === "COLLECTED") {
+        return res.status(409).json({ message: "A completed container cannot be edited." });
+      }
+      const updates = { ...req.body };
+      const changesBillOfLading = updates.billOfLading !== undefined &&
+        String(updates.billOfLading) !== String(container.billOfLading);
+      if (updates.cifValue !== undefined && container.dutyAssessment) {
+        return res.status(409).json({ message: "CIF value cannot be changed after duty assessment." });
+      }
+      if (updates.hsCode !== undefined && container.dutyAssessment) {
+        return res.status(409).json({ message: "HS Code cannot be changed after duty assessment." });
+      }
+      if (updates.billOfLading !== undefined && String(updates.billOfLading) !== String(container.billOfLading)) {
+        if (container.currentStage !== "ARRIVED" || await Document.exists({ container: id })) {
+          return res.status(409).json({ message: "Bill of Lading cannot be changed after clearance documents or review have begun." });
+        }
+        if (!/^[0-9a-fA-F]{24}$/.test(updates.billOfLading)) {
+          return res.status(400).json({ message: "Invalid Bill of Lading ID." });
+        }
+        const billOfLading = await BillOfLading.findById(updates.billOfLading);
+        if (!billOfLading) return res.status(404).json({ message: "Bill of Lading not found." });
+        if (!billOfLading.importer.equals(container.importer)) {
+          return res.status(400).json({ message: "The replacement Bill of Lading must belong to the same Importer." });
+        }
+        if (req.user.role === "IMPORTER" && !billOfLading.importer.equals(req.user._id)) {
+          return res.status(403).json({ message: "You can only use your own Bills of Lading." });
+        }
+      }
+      if (updates.containerNumber !== undefined) {
+        if (typeof updates.containerNumber !== "string" || !updates.containerNumber.trim()) {
+          return res.status(400).json({ message: "Container number is required." });
+        }
+        updates.containerNumber = updates.containerNumber.trim().toUpperCase();
+      }
+      if (updates.size !== undefined && !["20FT", "40FT"].includes(updates.size)) {
+        return res.status(400).json({ message: "Container size must be 20FT or 40FT." });
+      }
+      for (const field of ["cargoDescription", "hsCode"]) {
+        if (updates[field] !== undefined) {
+          if (typeof updates[field] !== "string" || !updates[field].trim()) {
+            return res.status(400).json({ message: `${field === "hsCode" ? "HS Code" : "Cargo description"} is required.` });
+          }
+          updates[field] = updates[field].trim();
+        }
+      }
+      if (updates.cifValue !== undefined && (!Number.isFinite(Number(updates.cifValue)) || Number(updates.cifValue) <= 0)) {
+        return res.status(400).json({ message: "CIF value must be a number greater than zero." });
+      }
+      if (updates.arrivalDate !== undefined) {
+        if (updates.arrivalDate === null || updates.arrivalDate === "") {
+          return res.status(400).json({ message: "Arrival date is required." });
+        }
+        const parsedDate = new Date(updates.arrivalDate);
+        if (Number.isNaN(parsedDate.getTime())) return res.status(400).json({ message: "Invalid arrival date." });
+        updates.arrivalDate = parsedDate;
+      }
+      if (updates.assignedAgent !== undefined && updates.assignedAgent !== null && updates.assignedAgent !== "") {
+        if (!/^[0-9a-fA-F]{24}$/.test(String(updates.assignedAgent))) {
+          return res.status(400).json({ message: "Invalid Clearing Agent ID." });
+        }
+        const agent = await User.findOne({ _id: updates.assignedAgent, role: "CLEARING_AGENT", isActive: true }).select("_id");
+        if (!agent) return res.status(400).json({ message: "Selected Clearing Agent does not exist or is inactive." });
+        updates.assignedAgent = agent._id;
+      } else if (updates.assignedAgent !== undefined) {
+        updates.assignedAgent = null;
+      }
+
+      const updateFilter = {
+        _id: id,
+        status: { $nin: ["INACTIVE", "COMPLETED"] },
+        currentStage: { $ne: "COLLECTED" },
+      };
+      if (updates.cifValue !== undefined || updates.hsCode !== undefined) {
+        updateFilter.dutyAssessment = { $exists: false };
+      }
+      if (changesBillOfLading) {
+        updateFilter.currentStage = "ARRIVED";
+        updateFilter.documentUploadReservations = {
+          $not: { $elemMatch: { expiresAt: { $gt: new Date() } } },
+        };
+      }
+      const updatedContainer = await Container.findOneAndUpdate(
+        updateFilter,
+        { $set: updates },
+        { returnDocument: "after", runValidators: true },
+      );
+      if (!updatedContainer) return res.status(409).json({ message: "Container status changed. Refresh before editing." });
+      return res.status(200).json({ message: "Container updated successfully.", container: updatedContainer });
+    } catch (error) {
+      if (error.code === 11000) return res.status(409).json({ message: "This container number already has an active clearance." });
+      if (error.name === "ValidationError") return res.status(400).json({ message: error.message });
+      next(error);
+    }
+  },
+);
+
+// PATCH /api/containers/:id/deactivate
+// Admin only. Marks the container inactive while preserving its history and stage.
+router.patch(
+  "/:id/deactivate",
+  AuthMiddleware,
+  RoleMiddleware("ADMIN"),
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      if (!/^[0-9a-fA-F]{24}$/.test(id)) return res.status(400).json({ message: "Invalid container ID." });
+      const container = await Container.findOneAndUpdate(
+        {
+          _id: id,
+          status: { $ne: "INACTIVE" },
+          documentUploadReservations: {
+            $not: { $elemMatch: { expiresAt: { $gt: new Date() } } },
+          },
+        },
+        { $set: { status: "INACTIVE" } },
+        { returnDocument: "after", runValidators: true },
+      );
+      if (!container) {
+        const existing = await Container.findById(id).select("_id status");
+        if (!existing) return res.status(404).json({ message: "Container not found." });
+        const activeUpload = await Container.exists({
+          _id: id,
+          documentUploadReservations: { $elemMatch: { expiresAt: { $gt: new Date() } } },
+        });
+        if (activeUpload) return res.status(409).json({ message: "Wait for the active document upload to finish before deactivating this container." });
+        return res.status(409).json({ message: "Container is already inactive." });
+      }
+      return res.status(200).json({ message: "Container deactivated successfully.", container });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 // PATCH /api/containers/:id/stage
 // Importer, Clearing Agent, or Customs Officer depending on the transition.
 // Accepts toStage and an optional reason for the permitted backward transition.
@@ -518,6 +684,10 @@ router.patch("/:id/stage", AuthMiddleware, async (req, res, next) => {
       return res.status(404).json({
         message: "Container not found.",
       });
+    }
+
+    if (container.status === "INACTIVE") {
+      return res.status(409).json({ message: "An inactive container cannot advance through clearance." });
     }
 
     // Importers can only transition their own containers.
@@ -633,6 +803,7 @@ router.patch("/:id/stage", AuthMiddleware, async (req, res, next) => {
     const stageUpdateFilter = {
       _id: id,
       currentStage: fromStage,
+      status: { $in: ["ACTIVE", "HELD"] },
     };
 
     // Do not begin Customs review while a valid upload is still being processed.
@@ -781,6 +952,10 @@ router.patch(
         });
       }
 
+      if (container.status === "INACTIVE") {
+        return res.status(409).json({ message: "An inactive container cannot be reassigned." });
+      }
+
       // Importers may only assign Agents to their own containers.
       if (!container.importer.equals(req.user._id)) {
         return res.status(403).json({
@@ -806,12 +981,16 @@ router.patch(
         });
       }
 
-      container.assignedAgent = agent._id;
-      await container.save();
+      const updatedContainer = await Container.findOneAndUpdate(
+        { _id: container._id, importer: req.user._id, status: { $ne: "INACTIVE" }, currentStage: { $ne: "COLLECTED" } },
+        { $set: { assignedAgent: agent._id } },
+        { returnDocument: "after", runValidators: true },
+      );
+      if (!updatedContainer) return res.status(409).json({ message: "Container status changed. Refresh before assigning an Agent." });
 
       return res.status(200).json({
         message: "Clearing Agent assigned successfully.",
-        container,
+        container: updatedContainer,
       });
     } catch (error) {
       next(error);
