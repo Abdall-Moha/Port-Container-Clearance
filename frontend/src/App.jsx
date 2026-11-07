@@ -4,9 +4,13 @@ import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import PublicLayout from "./components/PublicLayout.jsx";
 import { AuthProvider } from "./context/AuthContext.jsx";
 import DashboardPage from "./pages/DashboardPage.jsx";
+import ContainersPage from "./pages/ContainersPage.jsx";
+import DocumentsPage from "./pages/DocumentsPage.jsx";
 import HomePage from "./pages/HomePage.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
+import PortsManagementPage from "./pages/PortsManagementPage.jsx";
 import TrackingPage from "./pages/TrackingPage.jsx";
+import UsersManagementPage from "./pages/UsersManagementPage.jsx";
 
 // Configure public routes and protect the shared dashboard shell.
 function App() {
@@ -28,6 +32,12 @@ function App() {
             }
           >
             <Route index element={<DashboardPage />} />
+            <Route path="containers" element={<ContainersPage />} />
+            <Route path="documents" element={<DocumentsPage />} />
+            <Route element={<ProtectedRoute allowedRoles={["ADMIN"]} />}>
+              <Route path="users" element={<UsersManagementPage />} />
+              <Route path="ports" element={<PortsManagementPage />} />
+            </Route>
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
