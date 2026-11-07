@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 import {
   FaAnchor,
   FaBars,
@@ -8,10 +8,13 @@ import {
   FaRightToBracket,
   FaXmark,
 } from "react-icons/fa6";
+import useAuth from "../context/useAuth.js";
 
 // Display responsive public navigation and keep its mobile menu easy to use.
 function SiteHeader() {
   const [menuOpen, setMenuOpen] = useState(false);
+  const { isAuthenticated, signOut } = useAuth();
+  const navigate = useNavigate();
   const linkClass = ({ isActive }) =>
     `rounded-lg px-3 py-2 text-sm font-semibold transition-colors duration-200 ${
       isActive
@@ -30,6 +33,13 @@ function SiteHeader() {
   // Close the mobile menu after the visitor selects a destination.
   function closeMenu() {
     setMenuOpen(false);
+  }
+
+  // Clear the authenticated session and return the user to the public home page.
+  function handleLogout() {
+    signOut();
+    closeMenu();
+    navigate("/", { replace: true });
   }
 
   return (
@@ -58,16 +68,29 @@ function SiteHeader() {
           <nav className="hidden items-center gap-1 md:flex" aria-label="Main navigation">
             <NavLink to="/" end className={linkClass}>Home</NavLink>
             <NavLink to="/track" className={linkClass}>Track Container</NavLink>
-            <NavLink
-              to="/login"
-              className={({ isActive }) =>
-                `ml-2 rounded-xl px-5 py-2.5 text-sm font-bold text-white shadow-sm transition duration-200 hover:-translate-y-0.5 hover:bg-[#21377a] hover:shadow-md focus:outline-none focus:ring-4 focus:ring-blue-200 motion-reduce:transform-none motion-reduce:transition-none ${
-                  isActive ? "bg-[#2B4593]" : "bg-[#172554]"
-                }`
-              }
-            >
-              Login
-            </NavLink>
+            {isAuthenticated ? (
+              <>
+                <NavLink to="/dashboard" className={linkClass}>Dashboard</NavLink>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="ml-2 rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-bold text-[#172554] transition duration-200 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                >
+                  Logout
+                </button>
+              </>
+            ) : (
+              <NavLink
+                to="/login"
+                className={({ isActive }) =>
+                  `ml-2 rounded-xl px-5 py-2.5 text-sm font-bold text-white shadow-sm transition duration-200 hover:-translate-y-0.5 hover:bg-[#21377a] hover:shadow-md focus:outline-none focus:ring-4 focus:ring-blue-200 motion-reduce:transform-none motion-reduce:transition-none ${
+                    isActive ? "bg-[#2B4593]" : "bg-[#172554]"
+                  }`
+                }
+              >
+                Login
+              </NavLink>
+            )}
           </nav>
 
           <button
@@ -128,20 +151,35 @@ function SiteHeader() {
           <NavLink to="/track" onClick={closeMenu} className={drawerLinkClass}>
             <FaMagnifyingGlass className="text-base" /> Track Container
           </NavLink>
+          {isAuthenticated && (
+            <NavLink to="/dashboard" onClick={closeMenu} className={drawerLinkClass}>
+              <FaHouse className="text-base" /> Dashboard
+            </NavLink>
+          )}
         </div>
 
         <div className="border-t border-slate-200 p-4">
-          <NavLink
-            to="/login"
-            onClick={closeMenu}
-            className={({ isActive }) =>
-              `flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold text-white transition-colors ${
-                isActive ? "bg-[#2B4593]" : "bg-[#172554] hover:bg-[#21377a]"
-              }`
-            }
-          >
-            <FaRightToBracket /> Login
-          </NavLink>
+          {isAuthenticated ? (
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700 transition-colors hover:bg-rose-100"
+            >
+              <FaRightToBracket /> Logout
+            </button>
+          ) : (
+            <NavLink
+              to="/login"
+              onClick={closeMenu}
+              className={({ isActive }) =>
+                `flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold text-white transition-colors ${
+                  isActive ? "bg-[#2B4593]" : "bg-[#172554] hover:bg-[#21377a]"
+                }`
+              }
+            >
+              <FaRightToBracket /> Login
+            </NavLink>
+          )}
           <p className="mt-3 text-center text-xs text-slate-400">
             Port Container Clearance Tracker
           </p>

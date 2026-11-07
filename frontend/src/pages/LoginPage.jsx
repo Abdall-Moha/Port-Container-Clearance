@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { FaAnchor, FaEye, FaEyeSlash } from "react-icons/fa6";
 import api from "../config/api.js";
+import useAuth from "../context/useAuth.js";
 
 // Sign in with the email and password accepted by the backend login endpoint.
 function LoginPage() {
@@ -10,7 +11,8 @@ function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  const [successMessage, setSuccessMessage] = useState("");
+  const { signIn } = useAuth();
+  const navigate = useNavigate();
 
   // Validate credentials and submit them to the real backend login route.
   async function handleSubmit(event) {
@@ -20,18 +22,15 @@ function LoginPage() {
     const cleanEmail = email.trim().toLowerCase();
     if (!/^\S+@\S+\.\S+$/.test(cleanEmail)) {
       setErrorMessage("Enter a valid email address.");
-      setSuccessMessage("");
       return;
     }
     if (!password) {
       setErrorMessage("Enter your password.");
-      setSuccessMessage("");
       return;
     }
 
     setIsLoading(true);
     setErrorMessage("");
-    setSuccessMessage("");
 
     try {
       const response = await api.post("/users/login", {
@@ -39,9 +38,10 @@ function LoginPage() {
         password,
       });
 
-      // The token is intentionally not persisted because session handling is not part of this phase.
-      setSuccessMessage(response.data?.message || "Login successful.");
+      // Save the token and safe user profile, then open the protected dashboard.
+      signIn(response.data);
       setPassword("");
+      navigate("/dashboard", { replace: true });
     } catch (error) {
       setErrorMessage(error.response?.data?.message || "Unable to sign in right now. Please try again.");
     } finally {
@@ -122,8 +122,6 @@ function LoginPage() {
             </div>
 
             {errorMessage && <p className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800" role="alert">{errorMessage}</p>}
-            {successMessage && <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800" role="status">{successMessage}</p>}
-
             <button
               type="submit"
               disabled={isLoading}
