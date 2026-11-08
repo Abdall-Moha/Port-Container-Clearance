@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { useLanguage } from "../context/LanguageContext.jsx";
 import {
   FaArrowRight,
   FaBoxesStacked,
@@ -69,6 +70,7 @@ const previewMilestones = [
 
 // Present the public purpose and clearance stages of the tracker.
 function HomePage() {
+  const { t } = useLanguage();
   return (
     <>
       {/* Keyframes used only by the hero animations; all are disabled for reduced motion. */}
@@ -117,24 +119,24 @@ function HomePage() {
               style={{ animationDelay: "0.05s" }}
             >
               <span className="size-2 rounded-full bg-emerald-400" />
-              Port container clearance
+              {t("Port container clearance")}
             </div>
 
             <h1
               className="hero-fade-up mt-6 text-[2.5rem] font-black leading-[1.08] tracking-[-0.035em] sm:text-5xl lg:text-[3.5rem]"
               style={{ animationDelay: "0.15s" }}
             >
-              Your container&apos;s journey,{" "}
-              <span className="text-sky-300">clearly tracked.</span>
+              {t("Your container's journey,")}{" "}
+              <span className="text-sky-300">{t("clearly tracked.")}</span>
             </h1>
 
             <p
               className="hero-fade-up mt-5 text-base leading-7 text-blue-100/85 sm:text-lg sm:leading-8"
               style={{ animationDelay: "0.3s" }}
             >
-              Follow container clearance from arrival through collection. Check
-              the current stage and completed milestones with a container
-              number.
+              {t(
+                "Follow container clearance from arrival through collection. Check the current stage and completed milestones with a container number.",
+              )}
             </p>
 
             <div
@@ -145,14 +147,14 @@ function HomePage() {
                 to="/track"
                 className="group inline-flex items-center justify-center gap-2.5 rounded-xl bg-white px-6 py-3.5 text-sm font-extrabold text-[#172554] shadow-lg shadow-black/20 transition duration-200 hover:-translate-y-0.5 hover:bg-blue-50 focus:outline-none focus:ring-4 focus:ring-white/30 motion-reduce:transform-none motion-reduce:transition-none"
               >
-                Track Your Container{" "}
+                {t("Track Your Container")}{" "}
                 <FaArrowRight className="transition-transform duration-200 group-hover:translate-x-1 motion-reduce:transform-none motion-reduce:transition-none" />
               </Link>
               <Link
                 to="/login"
                 className="inline-flex items-center justify-center rounded-xl border border-white/25 bg-white/10 px-6 py-3.5 text-sm font-bold text-white backdrop-blur transition duration-200 hover:-translate-y-0.5 hover:border-white/50 hover:bg-white/20 focus:outline-none focus:ring-4 focus:ring-white/20 motion-reduce:transform-none motion-reduce:transition-none"
               >
-                Staff Login
+                {t("Staff Login")}
               </Link>
             </div>
           </div>
@@ -166,7 +168,7 @@ function HomePage() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-[11px] font-extrabold uppercase tracking-[0.16em] text-blue-200/80">
-                    Sample tracking result
+                    {t("Sample tracking result")}
                   </p>
                   <p className="mt-1.5 font-mono text-xl font-bold tracking-wider text-white sm:text-2xl">
                     MSCU 123456 6
@@ -176,14 +178,14 @@ function HomePage() {
                   </p>
                 </div>
                 <span className="shrink-0 rounded-full bg-emerald-400/15 px-3 py-1 text-[11px] font-extrabold uppercase tracking-wider text-emerald-300 ring-1 ring-emerald-300/30">
-                  Duty paid
+                  {t("Duty paid")}
                 </span>
               </div>
 
               <div className="mt-6">
                 <div className="mb-2 flex items-center justify-between text-xs font-semibold text-blue-100/80">
-                  <span>Clearance progress</span>
-                  <span>Stage 5 of 8</span>
+                  <span>{t("Clearance progress")}</span>
+                  <span>{t("Stage 5 of 8")}</span>
                 </div>
                 <div className="grid grid-cols-8 gap-1.5">
                   {clearanceStages.map((stage, index) => (
@@ -207,9 +209,11 @@ function HomePage() {
                   <li key={item.title} className="flex items-center gap-3">
                     <FaCircleCheck className="shrink-0 text-lg text-emerald-300" />
                     <span className="flex-1 text-sm font-bold text-white">
-                      {item.title}
+                      {t(item.title)}
                     </span>
-                    <span className="text-xs text-blue-100/70">{item.time}</span>
+                    <span className="text-xs text-blue-100/70">
+                      {item.time}
+                    </span>
                   </li>
                 ))}
                 <li className="flex items-center gap-3">
@@ -217,9 +221,11 @@ function HomePage() {
                     <span className="size-3 rounded-full border-2 border-dashed border-blue-200/70" />
                   </span>
                   <span className="flex-1 text-sm font-semibold text-blue-100/80">
-                    Inspection
+                    {t("Inspection")}
                   </span>
-                  <span className="text-xs text-blue-100/60">Up next</span>
+                  <span className="text-xs text-blue-100/60">
+                    {t("Up next")}
+                  </span>
                 </li>
               </ul>
             </div>
@@ -233,35 +239,46 @@ function HomePage() {
           preserveAspectRatio="none"
           aria-hidden="true"
         >
-          <path fill="currentColor" d="M0 48h1440V20C1200 -4 960 -4 720 20S240 44 0 20z" />
+          <path
+            fill="currentColor"
+            d="M0 48h1440V20C1200 -4 960 -4 720 20S240 44 0 20z"
+          />
         </svg>
       </section>
 
       <section className="bg-white py-14 sm:py-18 lg:py-22">
         <div className="mx-auto max-w-7xl px-5 sm:px-8 lg:px-10">
           <SectionHeading
-            eyebrow="A clear process"
-            title="How container clearance moves forward"
-            text="Follow each recorded milestone as a container moves through the clearance workflow."
+            eyebrow={t("A clear process")}
+            title={t("How container clearance moves forward")}
+            text={t(
+              "Follow each recorded milestone as a container moves through the clearance workflow.",
+            )}
           />
           <div className="mt-10 grid gap-5 md:grid-cols-3">
             <ProcessCard
               icon={<FaBoxesStacked />}
               number="01"
-              title="Container arrives"
-              text="The container is registered and its clearance progress begins at the port."
+              title={t("Container arrives")}
+              text={t(
+                "The container is registered and its clearance progress begins at the port.",
+              )}
             />
             <ProcessCard
               icon={<FaFileCircleCheck />}
               number="02"
-              title="Documents and duty"
-              text="Required documents are reviewed, then applicable duty is assessed and paid."
+              title={t("Documents and duty")}
+              text={t(
+                "Required documents are reviewed, then applicable duty is assessed and paid.",
+              )}
             />
             <ProcessCard
               icon={<FaClipboardCheck />}
               number="03"
-              title="Inspection and collection"
-              text="The container proceeds through inspection, release, and final collection."
+              title={t("Inspection and collection")}
+              text={t(
+                "The container proceeds through inspection, release, and final collection.",
+              )}
             />
           </div>
         </div>
@@ -272,17 +289,17 @@ function HomePage() {
           <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
             <div>
               <p className="text-xs font-extrabold uppercase tracking-[0.18em] text-[#2B4593]">
-                Clearance timeline
+                {t("Clearance timeline")}
               </p>
               <h2 className="mt-3 text-3xl font-black tracking-tight text-[#172554] sm:text-4xl">
-                Eight stages. One clear view.
+                {t("Eight stages. One clear view.")}
               </h2>
             </div>
             <Link
               to="/track"
               className="group inline-flex w-fit items-center gap-2 text-sm font-extrabold text-[#2B4593] transition-colors hover:text-blue-950"
             >
-              Look up a container{" "}
+              {t("Look up a container")}{" "}
               <FaArrowRight className="transition-transform group-hover:translate-x-1 motion-reduce:transform-none" />
             </Link>
           </div>
@@ -303,10 +320,10 @@ function HomePage() {
                     </span>
                   </div>
                   <h3 className="mt-5 text-sm font-extrabold leading-5 tracking-wide text-[#172554]">
-                    {stage.title}
+                    {t(stage.title)}
                   </h3>
                   <p className="mt-2 text-sm leading-6 text-slate-600">
-                    {stage.description}
+                    {t(stage.description)}
                   </p>
                 </li>
               );
@@ -321,39 +338,44 @@ function HomePage() {
           <div className="flex flex-col gap-5 p-6 sm:p-8 md:flex-row md:items-center md:justify-between lg:px-10">
             <div className="max-w-xl">
               <p className="text-xs font-extrabold uppercase tracking-[0.18em] text-blue-200">
-                Built for visibility
+                {t("Built for visibility")}
               </p>
               <h2 className="mt-2 text-2xl font-black leading-tight tracking-tight text-white sm:text-3xl">
-                Stay informed at every step.
+                {t("Stay informed at every step.")}
               </h2>
               <p className="mt-3 text-sm leading-6 text-blue-100/80">
-                Use the public tracking page to see the latest recorded stage
-                and when completed milestones were recorded.
+                {t(
+                  "Use the public tracking page to see the latest recorded stage and when completed milestones were recorded.",
+                )}
               </p>
             </div>
             <Link
               to="/track"
               className="group inline-flex w-fit shrink-0 items-center gap-2 rounded-lg bg-white px-5 py-3 text-sm font-extrabold text-[#172554] transition duration-200 hover:-translate-y-0.5 hover:bg-blue-50 motion-reduce:transform-none motion-reduce:transition-none"
             >
-              Start tracking{" "}
+              {t("Start tracking")}{" "}
               <FaArrowRight className="transition-transform group-hover:translate-x-1 motion-reduce:transform-none" />
             </Link>
           </div>
           <div className="grid gap-px border-t border-white/10 bg-white/10 md:grid-cols-3">
             <BenefitCard
               icon={<FaMagnifyingGlass />}
-              title="Simple lookup"
-              text="Enter a container number to view its clearance progress."
+              title={t("Simple lookup")}
+              text={t(
+                "Enter a container number to view its clearance progress.",
+              )}
             />
             <BenefitCard
               icon={<FaClock />}
-              title="Milestone times"
-              text="See the date and time recorded for completed stages."
+              title={t("Milestone times")}
+              text={t("See the date and time recorded for completed stages.")}
             />
             <BenefitCard
               icon={<FaClipboardCheck />}
-              title="Process visibility"
-              text="Understand what stage comes next in the clearance sequence."
+              title={t("Process visibility")}
+              text={t(
+                "Understand what stage comes next in the clearance sequence.",
+              )}
             />
           </div>
         </div>
@@ -364,21 +386,23 @@ function HomePage() {
 
 // Keep section introductions consistent without hiding their supporting text.
 function SectionHeading({ eyebrow, title, text }) {
+  const { t } = useLanguage();
   return (
     <div className="mx-auto max-w-2xl text-center">
       <p className="text-xs font-extrabold uppercase tracking-[0.18em] text-[#2B4593]">
-        {eyebrow}
+        {t(eyebrow)}
       </p>
       <h2 className="mt-3 text-3xl font-black tracking-tight text-[#172554] sm:text-4xl">
-        {title}
+        {t(title)}
       </h2>
-      <p className="mt-4 leading-7 text-slate-600">{text}</p>
+      <p className="mt-4 leading-7 text-slate-600">{t(text)}</p>
     </div>
   );
 }
 
 // Show one step in the clearance overview with a small hover emphasis.
 function ProcessCard({ icon, number, title, text }) {
+  const { t } = useLanguage();
   return (
     <article className="group rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-6 shadow-sm shadow-slate-900/[0.04] transition duration-200 hover:-translate-y-1 hover:border-blue-200 hover:shadow-xl hover:shadow-blue-950/[0.08] motion-reduce:transform-none motion-reduce:transition-none">
       <div className="flex items-center justify-between">
@@ -386,25 +410,26 @@ function ProcessCard({ icon, number, title, text }) {
           {icon}
         </span>
         <span className="text-xs font-black tracking-[0.16em] text-slate-300">
-          STEP {number}
+          {t("STEP")} {number}
         </span>
       </div>
-      <h3 className="mt-5 text-lg font-extrabold text-[#172554]">{title}</h3>
-      <p className="mt-2 text-sm leading-6 text-slate-600">{text}</p>
+      <h3 className="mt-5 text-lg font-extrabold text-[#172554]">{t(title)}</h3>
+      <p className="mt-2 text-sm leading-6 text-slate-600">{t(text)}</p>
     </article>
   );
 }
 
 // Show one public tracking benefit as a compact icon-and-text row.
 function BenefitCard({ icon, title, text }) {
+  const { t } = useLanguage();
   return (
     <article className="group flex items-start gap-4 bg-[#172554] p-5 transition duration-200 hover:bg-[#1c2d66] motion-reduce:transition-none sm:p-6">
       <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-white/10 text-base text-blue-200 transition-colors group-hover:bg-white group-hover:text-[#2B4593]">
         {icon}
       </span>
       <div>
-        <h3 className="font-extrabold text-white">{title}</h3>
-        <p className="mt-1 text-sm leading-6 text-blue-100/75">{text}</p>
+        <h3 className="font-extrabold text-white">{t(title)}</h3>
+        <p className="mt-1 text-sm leading-6 text-blue-100/75">{t(text)}</p>
       </div>
     </article>
   );

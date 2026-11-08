@@ -10,9 +10,11 @@ import {
 import useAuth from "../context/useAuth.js";
 import { getDashboardNavigation } from "../config/dashboardNavigation.js";
 import api from "../config/api.js";
+import LanguageSwitcher from "./LanguageSwitcher.jsx";
+import { useLanguage } from "../context/LanguageContext.jsx";
 
 // Format backend role constants as readable labels for the dashboard header.
-function formatRole(role) {
+function formatRole(role, translate) {
   const labels = {
     ADMIN: "Administrator",
     IMPORTER: "Importer",
@@ -20,7 +22,7 @@ function formatRole(role) {
     CUSTOMS_OFFICER: "Customs Officer",
   };
 
-  return labels[role] || role;
+  return translate(labels[role] || role);
 }
 
 // Provide the shared responsive sidebar and user header for dashboard pages.
@@ -28,6 +30,7 @@ function DashboardLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
+  const { t } = useLanguage();
   const navigationItems = getDashboardNavigation(user?.role);
   const [unreadCount, setUnreadCount] = useState(0);
 
@@ -200,7 +203,7 @@ function DashboardLayout() {
               </button>
               <div className="min-w-0">
                 <p className="truncate text-xs font-semibold text-slate-500">
-                  Port Container Clearance Tracker
+                  {t("Port Container Clearance Tracker")}
                 </p>
                 <h1 className="text-base font-extrabold text-[#172554] sm:text-lg">
                   Dashboard
@@ -208,7 +211,9 @@ function DashboardLayout() {
               </div>
             </div>
             {/* User info: hidden on phones, shown from small screens and up */}
-            <div className="hidden min-w-0 items-center gap-3 sm:flex">
+            <div className="flex items-center gap-3">
+              <LanguageSwitcher />
+              <div className="hidden min-w-0 items-center gap-3 sm:flex">
               <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-blue-100 text-sm font-black text-[#2B4593]">
                 {user?.fullName?.trim()?.charAt(0)?.toUpperCase() || "U"}
               </span>
@@ -217,8 +222,9 @@ function DashboardLayout() {
                   {user?.fullName}
                 </p>
                 <p className="text-xs font-semibold text-slate-500">
-                  {formatRole(user?.role)}
+                  {formatRole(user?.role, t)}
                 </p>
+              </div>
               </div>
             </div>
           </div>

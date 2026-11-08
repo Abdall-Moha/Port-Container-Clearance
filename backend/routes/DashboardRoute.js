@@ -163,8 +163,8 @@ async function getRecentNotifications(user) {
     unreadCount,
     notifications: notifications.map((notification) => ({
       _id: notification._id,
-      title: user.preferredLanguage === "so" ? notification.titleSomali : notification.titleEnglish,
-      message: user.preferredLanguage === "so" ? notification.messageSomali : notification.messageEnglish,
+      title: notification.titleEnglish,
+      message: notification.messageEnglish,
       isRead: notification.isRead,
       createdAt: notification.createdAt,
       containerNumber: notification.container?.containerNumber || "",

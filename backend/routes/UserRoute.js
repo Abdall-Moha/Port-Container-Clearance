@@ -66,7 +66,6 @@ router.post("/login", loginRateLimit, async (req, res, next) => {
         email: user.email,
         phone: user.phone,
         role: user.role,
-        preferredLanguage: user.preferredLanguage,
       },
     });
   } catch (error) {
@@ -76,7 +75,7 @@ router.post("/login", loginRateLimit, async (req, res, next) => {
 
 // POST /api/users
 // Admin only.
-// Accepts fullName, email, password, phone, role, preferredLanguage.
+// Accepts fullName, email, password, phone, and role.
 // Creates Importer, Clearing Agent, or Customs Officer accounts.
 // Returns the created user's safe information.
 router.post(
@@ -91,7 +90,6 @@ router.post(
         password,
         phone,
         role,
-        preferredLanguage,
       } = req.body;
 
       if (!fullName || !email || !password || !role) {
@@ -119,15 +117,6 @@ router.post(
         });
       }
 
-      if (
-        preferredLanguage &&
-        !["en", "so"].includes(preferredLanguage)
-      ) {
-        return res.status(400).json({
-          message: "Preferred language must be en or so.",
-        });
-      }
-
       const normalizedEmail = email.trim().toLowerCase();
 
       const existingUser = await User.findOne({
@@ -146,7 +135,6 @@ router.post(
         password,
         phone,
         role,
-        preferredLanguage: preferredLanguage || "en",
         isActive: true,
         createdBy: req.user._id,
       });
@@ -160,7 +148,6 @@ router.post(
           phone: newUser.phone,
           role: newUser.role,
           isActive: newUser.isActive,
-          preferredLanguage: newUser.preferredLanguage,
         },
       });
     } catch (error) {
@@ -295,7 +282,6 @@ router.get("/me", AuthMiddleware, async (req, res, next) => {
         phone: req.user.phone,
         role: req.user.role,
         isActive: req.user.isActive,
-        preferredLanguage: req.user.preferredLanguage,
         createdAt: req.user.createdAt,
       },
     });
@@ -349,7 +335,6 @@ router.patch("/me", AuthMiddleware, async (req, res, next) => {
         phone: user.phone,
         role: user.role,
         isActive: user.isActive,
-        preferredLanguage: user.preferredLanguage,
         createdAt: user.createdAt,
       },
     });
@@ -450,7 +435,7 @@ router.patch("/change-password", AuthMiddleware, async (req, res, next) => {
 
 // PATCH /api/users/:id
 // Admin only.
-// Accepts fullName, phone, role, isActive, preferredLanguage.
+// Accepts fullName, phone, role, and isActive.
 // Updates an existing user without allowing password changes here.
 router.patch(
   "/:id",
@@ -471,7 +456,6 @@ router.patch(
         phone,
         role,
         isActive,
-        preferredLanguage,
       } = req.body;
 
       const updates = {};
@@ -513,15 +497,6 @@ router.patch(
           });
         }
         updates.isActive = isActive;
-      }
-
-      if (preferredLanguage !== undefined) {
-        if (!["en", "so"].includes(preferredLanguage)) {
-          return res.status(400).json({
-            message: "Preferred language must be en or so.",
-          });
-        }
-        updates.preferredLanguage = preferredLanguage;
       }
 
       if (Object.keys(updates).length === 0) {
@@ -585,7 +560,6 @@ router.patch(
           phone: targetUser.phone,
           role: targetUser.role,
           isActive: targetUser.isActive,
-          preferredLanguage: targetUser.preferredLanguage,
         },
       });
     } catch (error) {

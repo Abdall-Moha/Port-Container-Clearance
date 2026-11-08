@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { FaAnchor, FaArrowRight, FaLocationDot } from "react-icons/fa6";
+import LocalizedText from "./LocalizedText.jsx";
 
 // Footer navigation links shown in the "Quick links" column.
 const footerLinks = [
@@ -28,14 +29,13 @@ function SiteFooter() {
               Port Container Clearance Tracker
             </Link>
             <p className="mt-4 max-w-sm text-sm leading-6 text-blue-100/75">
-              Follow recorded container clearance milestones from arrival
-              through collection.
+              <LocalizedText text={"Follow recorded container clearance milestones from arrival through collection."} />
             </p>
           </div>
 
           <nav aria-label="Footer navigation">
             <h2 className="text-xs font-extrabold uppercase tracking-[0.16em] text-blue-200">
-              Quick links
+              <LocalizedText text={"Quick links"} />
             </h2>
             <ul className="mt-4 space-y-3 text-sm font-semibold text-blue-100">
               {footerLinks.map((link) => (
@@ -54,7 +54,7 @@ function SiteFooter() {
 
           <div>
             <h2 className="text-xs font-extrabold uppercase tracking-[0.16em] text-blue-200">
-              Ports
+              <LocalizedText text={"Ports"} />
             </h2>
             <ul className="mt-4 space-y-3 text-sm text-blue-100/85">
               {footerPorts.map((port) => (
@@ -67,23 +67,23 @@ function SiteFooter() {
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:col-span-2 lg:col-span-1">
-            <h2 className="font-extrabold text-white">Check a container</h2>
+            <h2 className="font-extrabold text-white"><LocalizedText text={"Check a container"} /></h2>
             <p className="mt-2 text-sm leading-6 text-blue-100/75">
-              Enter a container number to see its latest clearance stage.
+              <LocalizedText text={"Enter a container number to see its latest clearance stage."} />
             </p>
             <Link
               to="/track"
               className="group mt-4 inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2.5 text-sm font-extrabold text-[#172554] transition duration-200 hover:-translate-y-0.5 hover:bg-blue-50 motion-reduce:transform-none motion-reduce:transition-none"
             >
-              Track now
+              <LocalizedText text={"Track now"} />
               <FaArrowRight className="transition-transform group-hover:translate-x-1 motion-reduce:transform-none" />
             </Link>
           </div>
         </div>
 
         <div className="mt-10 flex flex-col gap-2 border-t border-white/10 pt-5 text-xs text-blue-100/60 sm:flex-row sm:items-center sm:justify-between">
-          <p>© {new Date().getFullYear()} Port Container Clearance Tracker. All rights reserved.</p>
-          <p>Public tracking shows clearance progress only.</p>
+          <p>© {new Date().getFullYear()} <LocalizedText text={"Port Container Clearance Tracker"} />. <LocalizedText text={"All rights reserved."} /></p>
+          <p><LocalizedText text={"Public tracking shows clearance progress only."} /></p>
         </div>
       </div>
     </footer>

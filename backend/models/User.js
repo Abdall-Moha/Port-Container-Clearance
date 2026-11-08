@@ -49,12 +49,6 @@ const userSchema = new mongoose.Schema(
       default: true,
     },
 
-    preferredLanguage: {
-      type: String,
-      enum: ["en", "so"],
-      default: "en",
-    },
-
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

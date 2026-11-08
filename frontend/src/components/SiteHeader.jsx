@@ -9,11 +9,14 @@ import {
   FaXmark,
 } from "react-icons/fa6";
 import useAuth from "../context/useAuth.js";
+import LanguageSwitcher from "./LanguageSwitcher.jsx";
+import { useLanguage } from "../context/LanguageContext.jsx";
 
 // Display responsive public navigation and keep its mobile menu easy to use.
 function SiteHeader() {
   const [menuOpen, setMenuOpen] = useState(false);
   const { isAuthenticated, signOut } = useAuth();
+  const { t } = useLanguage();
   const navigate = useNavigate();
   const linkClass = ({ isActive }) =>
     `rounded-lg px-3 py-2 text-sm font-semibold transition-colors duration-200 ${
@@ -60,7 +63,7 @@ function SiteHeader() {
                 Port Clearance
               </span>
               <span className="hidden text-xs font-medium text-slate-500 sm:block">
-                Container tracking
+                {t("Container tracking")}
               </span>
             </span>
           </Link>
@@ -92,6 +95,8 @@ function SiteHeader() {
               </NavLink>
             )}
           </nav>
+
+          <LanguageSwitcher />
 
           <button
             type="button"

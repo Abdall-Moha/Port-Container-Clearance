@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { FaAnchor, FaEye, FaEyeSlash } from "react-icons/fa6";
 import api from "../config/api.js";
 import useAuth from "../context/useAuth.js";
+import { useLanguage } from "../context/LanguageContext.jsx";
 
 // Sign in with the email and password accepted by the backend login endpoint.
 function LoginPage() {
@@ -12,6 +13,7 @@ function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const { signIn } = useAuth();
+  const { t } = useLanguage();
   const navigate = useNavigate();
 
   // Validate credentials and submit them to the real backend login route.
@@ -21,11 +23,11 @@ function LoginPage() {
 
     const cleanEmail = email.trim().toLowerCase();
     if (!/^\S+@\S+\.\S+$/.test(cleanEmail)) {
-      setErrorMessage("Enter a valid email address.");
+      setErrorMessage(t("Enter a valid email address."));
       return;
     }
     if (!password) {
-      setErrorMessage("Enter your password.");
+      setErrorMessage(t("Enter your password."));
       return;
     }
 
@@ -43,7 +45,12 @@ function LoginPage() {
       setPassword("");
       navigate("/dashboard", { replace: true });
     } catch (error) {
-      setErrorMessage(error.response?.data?.message || "Unable to sign in right now. Please try again.");
+      setErrorMessage(
+        t(
+          error.response?.data?.message ||
+            "Unable to sign in right now. Please try again.",
+        ),
+      );
     } finally {
       setIsLoading(false);
     }
@@ -66,11 +73,12 @@ function LoginPage() {
             </span>
             <div>
               <h1 className="text-3xl font-black leading-tight lg:text-4xl">
-                Port Container Clearance Tracker
+                {t("Port Container Clearance Tracker")}
               </h1>
               <p className="mt-3 text-sm leading-6 text-blue-100">
-                Sign in with your registered account to access the tools
-                available for your role.
+                {t(
+                  "Sign in with your registered account to access the tools available for your role.",
+                )}
               </p>
             </div>
           </div>
@@ -78,12 +86,21 @@ function LoginPage() {
 
         {/* Right side: simple form */}
         <div className="flex flex-col justify-center p-6 sm:p-10 lg:p-12">
-          <h2 className="text-2xl font-black tracking-tight text-slate-950 sm:text-3xl">Sign in</h2>
-          <p className="mt-2 text-sm text-slate-600">Use the email and password registered with the system.</p>
+          <h2 className="text-2xl font-black tracking-tight text-slate-950 sm:text-3xl">
+            {t("Sign in")}
+          </h2>
+          <p className="mt-2 text-sm text-slate-600">
+            {t("Use the email and password registered with the system.")}
+          </p>
 
           <form onSubmit={handleSubmit} className="mt-7 space-y-5">
             <div>
-              <label htmlFor="email" className="mb-2 block text-sm font-bold text-slate-700">Email address</label>
+              <label
+                htmlFor="email"
+                className="mb-2 block text-sm font-bold text-slate-700"
+              >
+                {t("Email address")}
+              </label>
               <input
                 id="email"
                 name="email"
@@ -93,11 +110,16 @@ function LoginPage() {
                 autoComplete="email"
                 required
                 className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
-                placeholder="you@example.com"
+                placeholder={t("Email address")}
               />
             </div>
             <div>
-              <label htmlFor="password" className="mb-2 block text-sm font-bold text-slate-700">Password</label>
+              <label
+                htmlFor="password"
+                className="mb-2 block text-sm font-bold text-slate-700"
+              >
+                {t("Password")}
+              </label>
               <div className="relative">
                 <input
                   id="password"
@@ -108,32 +130,46 @@ function LoginPage() {
                   autoComplete="current-password"
                   required
                   className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 pr-12 text-slate-900 outline-none placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
-                  placeholder="Enter your password"
+                  placeholder={t("Enter your password")}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword((visible) => !visible)}
                   className="absolute inset-y-0 right-0 flex items-center px-4 text-slate-500 hover:text-blue-700 focus:outline-none"
-                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  aria-label={t(
+                    showPassword ? "Hide password" : "Show password",
+                  )}
                 >
                   {showPassword ? <FaEyeSlash /> : <FaEye />}
                 </button>
               </div>
             </div>
 
-            {errorMessage && <p className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800" role="alert">{errorMessage}</p>}
+            {errorMessage && (
+              <p
+                className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800"
+                role="alert"
+              >
+                {errorMessage}
+              </p>
+            )}
             <button
               type="submit"
               disabled={isLoading}
               className="w-full rounded-lg bg-blue-700 px-5 py-3 font-extrabold text-white transition hover:bg-blue-800 focus:outline-none focus:ring-4 focus:ring-blue-200 disabled:cursor-not-allowed disabled:bg-blue-400"
             >
-              {isLoading ? "Signing in…" : "Sign in"}
+              {isLoading ? t("Signing in…") : t("Sign in")}
             </button>
           </form>
 
           <p className="mt-6 text-center text-sm text-slate-500">
-            Need to check a container?{" "}
-            <Link className="font-bold text-blue-700 hover:text-blue-900" to="/track">Track it publicly</Link>
+            {t("Need to check a container?")}{" "}
+            <Link
+              className="font-bold text-blue-700 hover:text-blue-900"
+              to="/track"
+            >
+              {t("Track it publicly")}
+            </Link>
           </p>
         </div>
       </div>

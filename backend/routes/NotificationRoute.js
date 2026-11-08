@@ -31,22 +31,14 @@ router.get("/", AuthMiddleware, async (req, res, next) => {
       Notification.countDocuments(filter),
     ]);
 
-    // Return the title and message in the user's preferred language.
-    const preferredLanguage = req.user.preferredLanguage || "en";
-
+    // Keep notification text in English in the API; the frontend chooses its display language.
     const localizedNotifications = notifications.map((notification) => {
       const notificationObject = notification.toObject();
 
       return {
         ...notificationObject,
-        title:
-          preferredLanguage === "so"
-            ? notification.titleSomali
-            : notification.titleEnglish,
-        message:
-          preferredLanguage === "so"
-            ? notification.messageSomali
-            : notification.messageEnglish,
+        title: notification.titleEnglish,
+        message: notification.messageEnglish,
       };
     });
 
