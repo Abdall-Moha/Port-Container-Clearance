@@ -21,16 +21,9 @@ coverage
 .env
 .env.*
 !.env.example
-
-# Uploaded pictures (keep the folder, ignore the pictures)
-uploads/*
-!uploads/.gitkeep
-
-
-# Uploaded private documents
-uploads/documents/*
-!uploads/documents/.gitkeep
-
+# Uploaded files (keep the folders, ignore their contents)
+**/uploads/*/*
+!**/uploads/*/.gitkeep
 
 # Editor directories and files
 .vscode/*

@@ -7,9 +7,11 @@ import DashboardPage from "./pages/DashboardPage.jsx";
 import BillOfLadingPage from "./pages/BillOfLadingPage.jsx";
 import ContainersPage from "./pages/ContainersPage.jsx";
 import DocumentsPage from "./pages/DocumentsPage.jsx";
+import DutyRatesManagementPage from "./pages/DutyRatesManagementPage.jsx";
 import HomePage from "./pages/HomePage.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import PortsManagementPage from "./pages/PortsManagementPage.jsx";
+import PaymentsPage from "./pages/PaymentsPage.jsx";
 import ShippingLinesPage from "./pages/ShippingLinesPage.jsx";
 import TrackingPage from "./pages/TrackingPage.jsx";
 import UsersManagementPage from "./pages/UsersManagementPage.jsx";
@@ -43,6 +45,10 @@ function App() {
               <Route path="users" element={<UsersManagementPage />} />
               <Route path="ports" element={<PortsManagementPage />} />
               <Route path="shipping-lines" element={<ShippingLinesPage />} />
+              <Route path="duty-rates" element={<DutyRatesManagementPage />} />
+            </Route>
+            <Route element={<ProtectedRoute allowedRoles={["IMPORTER", "CLEARING_AGENT"]} />}>
+              <Route path="payments" element={<PaymentsPage />} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
