@@ -288,7 +288,70 @@ router.get(
 router.get("/me", AuthMiddleware, async (req, res, next) => {
   try {
     return res.status(200).json({
-      user: req.user,
+      user: {
+        id: req.user._id,
+        fullName: req.user.fullName,
+        email: req.user.email,
+        phone: req.user.phone,
+        role: req.user.role,
+        isActive: req.user.isActive,
+        preferredLanguage: req.user.preferredLanguage,
+        createdAt: req.user.createdAt,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// PATCH /api/users/me
+// Authenticated users can update only their own full name and phone number.
+router.patch("/me", AuthMiddleware, async (req, res, next) => {
+  try {
+    const { fullName, phone } = req.body;
+    const updates = {};
+
+    if (fullName !== undefined) {
+      if (typeof fullName !== "string" || !fullName.trim()) {
+        return res.status(400).json({ message: "Full name cannot be empty." });
+      }
+      if (fullName.trim().length > 120) {
+        return res.status(400).json({ message: "Full name cannot exceed 120 characters." });
+      }
+      updates.fullName = fullName.trim();
+    }
+
+    if (phone !== undefined) {
+      if (typeof phone !== "string" || phone.trim().length > 30) {
+        return res.status(400).json({ message: "Enter a valid phone number of up to 30 characters." });
+      }
+      updates.phone = phone.trim();
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ message: "Provide a full name or phone number to update." });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: updates },
+      { returnDocument: "after", runValidators: true },
+    ).select("-password");
+
+    if (!user) return res.status(404).json({ message: "User not found." });
+
+    return res.status(200).json({
+      message: "Profile updated successfully.",
+      user: {
+        id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        isActive: user.isActive,
+        preferredLanguage: user.preferredLanguage,
+        createdAt: user.createdAt,
+      },
     });
   } catch (error) {
     next(error);
@@ -351,6 +414,38 @@ router.patch(
     }
   },
 );
+
+// PATCH /api/users/change-password
+// Authenticated users change their own password after verifying the current one.
+router.patch("/change-password", AuthMiddleware, async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: "Current password and new password are required." });
+    }
+    if (typeof newPassword !== "string" || newPassword.length < 8) {
+      return res.status(400).json({ message: "New password must contain at least 8 characters." });
+    }
+
+    const user = await User.findById(req.user._id).select("+password");
+    if (!user) return res.status(404).json({ message: "User not found." });
+
+    const isPasswordCorrect = await user.comparePassword(currentPassword);
+    if (!isPasswordCorrect) {
+      return res.status(400).json({ message: "Current password is incorrect." });
+    }
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ message: "New password must be different from the current password." });
+    }
+
+    // The User model hashes the new password before it is stored.
+    user.password = newPassword;
+    await user.save();
+    return res.status(200).json({ message: "Password changed successfully." });
+  } catch (error) {
+    next(error);
+  }
+});
 
 
 // PATCH /api/users/:id
@@ -492,66 +587,6 @@ router.patch(
           isActive: targetUser.isActive,
           preferredLanguage: targetUser.preferredLanguage,
         },
-      });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-// PATCH /api/users/change-password
-// Authenticated users only.
-// Accepts currentPassword and newPassword.
-// Changes only the password of the currently logged-in user.
-router.patch(
-  "/change-password",
-  AuthMiddleware,
-  async (req, res, next) => {
-    try {
-      const { currentPassword, newPassword } = req.body;
-
-      if (!currentPassword || !newPassword) {
-        return res.status(400).json({
-          message: "Current password and new password are required.",
-        });
-      }
-
-      if (newPassword.length < 8) {
-        return res.status(400).json({
-          message: "New password must contain at least 8 characters.",
-        });
-      }
-
-      // Fetch the logged-in user's password hash for comparison.
-      const user = await User.findById(req.user._id).select("+password");
-
-      if (!user) {
-        return res.status(404).json({
-          message: "User not found.",
-        });
-      }
-
-      const isPasswordCorrect =
-        await user.comparePassword(currentPassword);
-
-      if (!isPasswordCorrect) {
-        return res.status(400).json({
-          message: "Current password is incorrect.",
-        });
-      }
-
-      if (currentPassword === newPassword) {
-        return res.status(400).json({
-          message: "New password must be different from the current password.",
-        });
-      }
-
-      // The User model automatically hashes this password before saving.
-      user.password = newPassword;
-      await user.save();
-
-      return res.status(200).json({
-        message: "Password changed successfully.",
       });
     } catch (error) {
       next(error);

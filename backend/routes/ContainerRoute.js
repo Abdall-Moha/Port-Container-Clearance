@@ -8,6 +8,7 @@ import ClearanceEvent from "../models/ClearanceEvent.js";
 import Document from "../models/Document.js";
 import DocumentVersion from "../models/DocumentVersion.js";
 import ReleaseOrder from "../models/ReleaseOrder.js";
+import DemurrageRate from "../models/DemurrageRate.js";
 
 import AuthMiddleware from "../middleware/AuthMiddleware.js";
 import RoleMiddleware from "../middleware/RoleMiddleware.js";
@@ -81,7 +82,7 @@ router.get("/track", publicTrackingRateLimit, async (req, res, next) => {
     }
 
     const container = await Container.findOne({ containerNumber, status: { $ne: "INACTIVE" } })
-      .select("containerNumber currentStage arrivalDate")
+      .select("containerNumber currentStage arrivalDate size updatedAt")
       .lean();
 
     if (!container) {
@@ -102,10 +103,19 @@ router.get("/track", publicTrackingRateLimit, async (req, res, next) => {
     const arrivalEvent = events.find((event) => event.toStage === "ARRIVED");
     const collectionEvent = events.find((event) => event.toStage === "COLLECTED");
     const arrivalTime = arrivalEvent?.createdAt || container.arrivalDate;
-    const endTime = collectionEvent?.createdAt || new Date();
+    const collectedAt = collectionEvent?.createdAt ||
+      (container.currentStage === "COLLECTED" ? container.updatedAt : null);
+    const endTime = collectedAt || new Date();
     const elapsedMilliseconds = Math.max(0, endTime - arrivalTime);
     const elapsedDays = Math.floor(elapsedMilliseconds / (24 * 60 * 60 * 1000));
     const chargeableDays = Math.max(0, elapsedDays - 7);
+    const demurrageRate = await DemurrageRate.findOne({
+      size: container.size,
+      isActive: true,
+    }).select("dailyRate").lean();
+    const estimatedFee = demurrageRate
+      ? chargeableDays * demurrageRate.dailyRate
+      : null;
 
     return res.status(200).json({
       containerNumber: container.containerNumber,
@@ -123,13 +133,12 @@ router.get("/track", publicTrackingRateLimit, async (req, res, next) => {
       })),
       demurrage: {
         arrivalAt: arrivalTime,
-        collectedAt: collectionEvent?.createdAt || null,
+        collectedAt,
         elapsedDays,
         freeDays: 7,
         chargeableDays,
-        dailyRate: null,
-        estimatedFee: null,
-        feeStatus: "RATE_NOT_CONFIGURED",
+        estimatedFee,
+        feeStatus: demurrageRate ? "AVAILABLE" : "RATE_NOT_CONFIGURED",
       },
     });
   } catch (error) {
@@ -367,6 +376,7 @@ router.post(
       try {
         await createEventNotifications({
           recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
+          eventKey: `container-arrived:${initialEvent._id}`,
           containerId: container._id,
           type: "CLEARANCE_STAGE",
           titleEnglish: "Container Arrived",
@@ -625,6 +635,31 @@ router.patch(
         { returnDocument: "after", runValidators: true },
       );
       if (!updatedContainer) return res.status(409).json({ message: "Container status changed. Refresh before editing." });
+
+      // Notify the importer and affected Clearing Agents when the assignment changes.
+      if (updates.assignedAgent !== undefined &&
+        String(container.assignedAgent || "") !== String(updatedContainer.assignedAgent || "")) {
+        try {
+          await createEventNotifications({
+            recipientIds: [container.importer, container.assignedAgent, updatedContainer.assignedAgent].filter(Boolean),
+            eventKey: `container-agent-assignment:${updatedContainer._id}:${updatedContainer.updatedAt.getTime()}`,
+            containerId: updatedContainer._id,
+            type: "CLEARANCE_STAGE",
+            titleEnglish: "Clearing Agent Assignment Updated",
+            titleSomali: "Xil-saarista Wakiilka Kastamka Waa La Cusboonaysiiyay",
+            messageEnglish: updatedContainer.assignedAgent
+              ? `The Clearing Agent assignment for container ${updatedContainer.containerNumber} has changed.`
+              : `The Clearing Agent assignment for container ${updatedContainer.containerNumber} has been removed.`,
+            messageSomali: updatedContainer.assignedAgent
+              ? `Xil-saarista Wakiilka Kastamka ee konteenarka ${updatedContainer.containerNumber} waa la beddelay.`
+              : `Xil-saarista Wakiilka Kastamka ee konteenarka ${updatedContainer.containerNumber} waa laga saaray.`,
+            sendSMS: true,
+          });
+        } catch (notificationError) {
+          console.error("Container assignment notification failed:", notificationError.message);
+        }
+      }
+
       return res.status(200).json({ message: "Container updated successfully.", container: updatedContainer });
     } catch (error) {
       if (error.code === 11000) return res.status(409).json({ message: "This container number already has an active clearance." });
@@ -888,14 +923,27 @@ router.patch("/:id/stage", AuthMiddleware, async (req, res, next) => {
           container.assignedAgent,
         ].filter(Boolean),
 
+        eventKey: `clearance-stage:${clearanceEvent._id}`,
         containerId: container._id,
         type: "CLEARANCE_STAGE",
 
-        titleEnglish: "Clearance Stage Updated",
-        titleSomali: "Marxaladda Fasaxa Waa La Cusboonaysiiyay",
+        titleEnglish:
+          fromStage === "CUSTOMS_REVIEW" && toStage === "DOCUMENTS_SUBMITTED"
+            ? "Documents Returned for Corrections"
+            : "Clearance Stage Updated",
+        titleSomali:
+          fromStage === "CUSTOMS_REVIEW" && toStage === "DOCUMENTS_SUBMITTED"
+            ? "Dukumentiyada Dib ayaa Loogu Celiyay Sixid"
+            : "Marxaladda Fasaxa Waa La Cusboonaysiiyay",
 
-        messageEnglish: `Container ${container.containerNumber} moved from ${fromStage} to ${toStage}.`,
-        messageSomali: `Konteenarka ${container.containerNumber} wuxuu ka gudbay ${fromStage} wuxuuna u gudbay ${toStage}.`,
+        messageEnglish:
+          fromStage === "CUSTOMS_REVIEW" && toStage === "DOCUMENTS_SUBMITTED"
+            ? `Documents for container ${container.containerNumber} were returned for corrections. Reason: ${reason.trim()}`
+            : `Container ${container.containerNumber} moved from ${fromStage} to ${toStage}.`,
+        messageSomali:
+          fromStage === "CUSTOMS_REVIEW" && toStage === "DOCUMENTS_SUBMITTED"
+            ? `Dukumentiyada konteenarka ${container.containerNumber} ayaa sixid loogu celiyay. Sababta: ${reason.trim()}`
+            : `Konteenarka ${container.containerNumber} wuxuu ka gudbay ${fromStage} wuxuuna u gudbay ${toStage}.`,
 
         sendSMS: true,
       });
@@ -905,6 +953,57 @@ router.patch("/:id/stage", AuthMiddleware, async (req, res, next) => {
         "Clearance notification failed:",
         notificationError.message,
       );
+    }
+
+    // Notify active Customs Officers when a container enters their review queue.
+    if (fromStage === "DOCUMENTS_SUBMITTED" && toStage === "CUSTOMS_REVIEW") {
+      try {
+        const customsOfficers = await User.find({
+          role: "CUSTOMS_OFFICER",
+          isActive: true,
+        }).select("_id");
+        if (customsOfficers.length > 0) {
+          await createEventNotifications({
+            recipientIds: customsOfficers.map((officer) => officer._id),
+            eventKey: `customs-review-queue:${clearanceEvent._id}`,
+            containerId: container._id,
+            type: "DOCUMENT_REVIEW",
+            titleEnglish: "Container Entered Customs Review",
+            titleSomali: "Konteenarku Wuxuu Galay Dib-u-eegista Kastamka",
+            messageEnglish: `Container ${container.containerNumber} is now in Customs Review.`,
+            messageSomali: `Konteenarka ${container.containerNumber} wuxuu hadda ku jiraa dib-u-eegista Kastamka.`,
+            sendSMS: false,
+          });
+        }
+      } catch (notificationError) {
+        console.error("Customs review notification failed:", notificationError.message);
+      }
+    }
+
+    // Alert active Customs Officers when a new container enters document submission.
+    if (fromStage === "ARRIVED" && toStage === "DOCUMENTS_SUBMITTED") {
+      try {
+        const customsOfficers = await User.find({
+          role: "CUSTOMS_OFFICER",
+          isActive: true,
+        }).select("_id");
+
+        if (customsOfficers.length > 0) {
+          await createEventNotifications({
+            recipientIds: customsOfficers.map((officer) => officer._id),
+            eventKey: `customs-document-queue:${clearanceEvent._id}`,
+            containerId: container._id,
+            type: "DOCUMENT_REVIEW",
+            titleEnglish: "Container Ready for Document Review",
+            titleSomali: "Konteenarku Wuxuu Diyaar u Yahay Dib-u-eegista Dukumentiyada",
+            messageEnglish: `Container ${container.containerNumber} has been submitted for document review.`,
+            messageSomali: `Konteenarka ${container.containerNumber} ayaa loo gudbiyay dib-u-eegista dukumentiyada.`,
+            sendSMS: false,
+          });
+        }
+      } catch (notificationError) {
+        console.error("Customs review queue notification failed:", notificationError.message);
+      }
     }
 
     // Send the clearance event to the Shipping Line webhook.

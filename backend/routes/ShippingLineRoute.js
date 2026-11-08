@@ -129,7 +129,10 @@ router.get("/", AuthMiddleware, async (req, res, next) => {
       filter.isActive = isActive === "true";
     }
 
-    const shippingLines = await ShippingLine.find(filter)
+    const shippingLineQuery = ShippingLine.find(filter);
+    if (req.user.role !== "ADMIN") shippingLineQuery.select("-webhookUrl");
+
+    const shippingLines = await shippingLineQuery
       .populate("createdBy", "fullName email")
       .sort({ name: 1 });
 
@@ -155,7 +158,10 @@ router.get("/:id", AuthMiddleware, async (req, res, next) => {
       });
     }
 
-    const shippingLine = await ShippingLine.findById(id)
+    const shippingLineQuery = ShippingLine.findById(id);
+    if (req.user.role !== "ADMIN") shippingLineQuery.select("-webhookUrl");
+
+    const shippingLine = await shippingLineQuery
       .populate("createdBy", "fullName email");
 
     if (!shippingLine) {

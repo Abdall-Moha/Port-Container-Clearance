@@ -5,6 +5,7 @@ import User from "../models/User.js";
 // Create notifications for one or more users when a system event happens.
 async function createEventNotifications({
   recipientIds,
+  eventKey,
   containerId = null,
   type = "GENERAL",
   titleEnglish,
@@ -37,11 +38,11 @@ async function createEventNotifications({
     throw new Error("No valid notification recipients were found");
   }
 
-  // Prepare one notification document for each recipient.
-  const notificationData = users.map((user) => {
+  // Prepare and save one notification for each recipient.
+  const notifications = await Promise.all(users.map(async (user) => {
     const hasPhoneNumber = Boolean(user.phone);
 
-    return {
+    const notificationData = {
       recipient: user._id,
       container: containerId,
       type,
@@ -65,10 +66,27 @@ async function createEventNotifications({
           ? new Date()
           : null,
     };
-  });
 
-  // Save all notifications in the database.
-  const notifications = await Notification.insertMany(notificationData);
+    // A stable event key makes retries safe for this user and event.
+    if (eventKey) {
+      notificationData.eventKey = eventKey;
+      try {
+        return await Notification.findOneAndUpdate(
+          { recipient: user._id, eventKey },
+          { $setOnInsert: notificationData },
+          { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+        );
+      } catch (error) {
+        // A concurrent retry may win the unique index between lookup and insert.
+        if (error.code === 11000) {
+          return Notification.findOne({ recipient: user._id, eventKey });
+        }
+        throw error;
+      }
+    }
+
+    return Notification.create(notificationData);
+  }));
 
   return notifications;
 }

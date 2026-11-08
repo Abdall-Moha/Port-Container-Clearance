@@ -8,6 +8,7 @@ import BillOfLadingPage from "./pages/BillOfLadingPage.jsx";
 import ContainersPage from "./pages/ContainersPage.jsx";
 import DocumentsPage from "./pages/DocumentsPage.jsx";
 import DutyRatesManagementPage from "./pages/DutyRatesManagementPage.jsx";
+import DemurrageRatesPage from "./pages/DemurrageRatesPage.jsx";
 import HomePage from "./pages/HomePage.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import PortsManagementPage from "./pages/PortsManagementPage.jsx";
@@ -19,6 +20,10 @@ import DutyAssessmentsPage from "./pages/DutyAssessmentsPage.jsx";
 import InspectionsPage from "./pages/InspectionsPage.jsx";
 import ReleaseOrdersPage from "./pages/ReleaseOrdersPage.jsx";
 import ContainerCollectionPage from "./pages/ContainerCollectionPage.jsx";
+import NotificationsPage from "./pages/NotificationsPage.jsx";
+import ProfilePage from "./pages/ProfilePage.jsx";
+import WebhooksManagementPage from "./pages/WebhooksManagementPage.jsx";
+import ReportsMonitoringPage from "./pages/ReportsMonitoringPage.jsx";
 
 // Configure public routes and protect the shared dashboard shell.
 function App() {
@@ -40,6 +45,10 @@ function App() {
             }
           >
             <Route index element={<DashboardPage />} />
+            <Route element={<ProtectedRoute allowedRoles={["ADMIN", "IMPORTER", "CLEARING_AGENT", "CUSTOMS_OFFICER"]} />}>
+              <Route path="notifications" element={<NotificationsPage />} />
+              <Route path="profile" element={<ProfilePage />} />
+            </Route>
             <Route path="containers" element={<ContainersPage />} />
             <Route path="documents" element={<DocumentsPage />} />
             <Route element={<ProtectedRoute allowedRoles={["ADMIN", "IMPORTER", "CLEARING_AGENT", "CUSTOMS_OFFICER"]} />}>
@@ -50,6 +59,9 @@ function App() {
               <Route path="ports" element={<PortsManagementPage />} />
               <Route path="shipping-lines" element={<ShippingLinesPage />} />
               <Route path="duty-rates" element={<DutyRatesManagementPage />} />
+              <Route path="demurrage-rates" element={<DemurrageRatesPage />} />
+              <Route path="webhooks" element={<WebhooksManagementPage />} />
+              <Route path="reports" element={<ReportsMonitoringPage />} />
             </Route>
             <Route element={<ProtectedRoute allowedRoles={["IMPORTER", "CLEARING_AGENT"]} />}>
               <Route path="payments" element={<PaymentsPage />} />

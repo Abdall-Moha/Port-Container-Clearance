@@ -6,6 +6,7 @@ import { randomUUID } from "crypto";
 import Document from "../models/Document.js";
 import DocumentVersion from "../models/DocumentVersion.js";
 import Container from "../models/Container.js";
+import User from "../models/User.js";
 
 import AuthMiddleware from "../middleware/AuthMiddleware.js";
 import RoleMiddleware from "../middleware/RoleMiddleware.js";
@@ -506,6 +507,7 @@ router.post(
           ),
 
           containerId: container._id,
+          eventKey: `document-version:${newVersion._id}`,
           type: "GENERAL",
 
           titleEnglish: "New Document Uploaded",
@@ -517,6 +519,25 @@ router.post(
 
           sendSMS: true,
         });
+
+        // Notify active Customs Officers that a new version is waiting for review.
+        const customsOfficers = await User.find({
+          role: "CUSTOMS_OFFICER",
+          isActive: true,
+        }).select("_id");
+        if (customsOfficers.length > 0) {
+          await createEventNotifications({
+            recipientIds: customsOfficers.map((officer) => officer._id),
+            eventKey: `customs-version-review:${newVersion._id}`,
+            containerId: container._id,
+            type: "DOCUMENT_REVIEW",
+            titleEnglish: "Document Version Awaiting Review",
+            titleSomali: "Nooca Dukumentiga Wuxuu Sugayaa Dib-u-eegis",
+            messageEnglish: `A new ${documentType.replaceAll("_", " ").toLowerCase()} version for container ${container.containerNumber} is waiting for review.`,
+            messageSomali: `Nooc cusub oo ${documentType.replaceAll("_", " ").toLowerCase()} ah ee konteenarka ${container.containerNumber} ayaa sugaya dib-u-eegis.`,
+            sendSMS: false,
+          });
+        }
       } catch (notificationError) {
         // Notification failure must not undo a successful document upload.
         console.error(

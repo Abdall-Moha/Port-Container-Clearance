@@ -307,13 +307,14 @@ router.post(
       // Notify the importer and assigned agent about the inspection schedule.
       try {
         await createEventNotifications({
-          recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
+          recipientIds: [container.importer, container.assignedAgent, inspector?._id].filter(Boolean),
+          eventKey: `inspection-scheduled:${inspection._id}`,
           containerId: container._id,
           type: "INSPECTION",
-          titleEnglish: "Inspection Scheduled",
-          titleSomali: "Baaritaanka Waa La Qorsheeyay",
-          messageEnglish: `Inspection ${inspectionNumber} for container ${container.containerNumber} is scheduled for ${inspectionDate.toLocaleString()}.`,
-          messageSomali: `Baaritaanka ${inspectionNumber} ee konteenarka ${container.containerNumber} waxaa loo qorsheeyay ${inspectionDate.toLocaleString()}.`,
+          titleEnglish: isRescheduledInspection ? "Reinspection Scheduled" : "Inspection Scheduled",
+          titleSomali: isRescheduledInspection ? "Dib-u-baaritaan ayaa La Qorsheeyay" : "Baaritaanka Waa La Qorsheeyay",
+          messageEnglish: `${isRescheduledInspection ? "Reinspection" : "Inspection"} ${inspectionNumber} for container ${container.containerNumber} is scheduled for ${inspectionDate.toLocaleString()}.`,
+          messageSomali: `${isRescheduledInspection ? "Dib-u-baaritaanka" : "Baaritaanka"} ${inspectionNumber} ee konteenarka ${container.containerNumber} waxaa loo qorsheeyay ${inspectionDate.toLocaleString()}.`,
           sendSMS: true,
         });
       } catch (notificationError) {
@@ -497,6 +498,7 @@ router.patch(
       try {
         await createEventNotifications({
           recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
+          eventKey: `inspection-result:${completedInspection._id}:${result}`,
           containerId: container._id,
           type: "INSPECTION",
           titleEnglish: result === "PASS" ? "Inspection Passed" : "Inspection Failed",

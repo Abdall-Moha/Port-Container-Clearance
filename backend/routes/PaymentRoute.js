@@ -256,6 +256,7 @@ router.post(
       try {
         await createEventNotifications({
           recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
+          eventKey: `duty-assessed:${clearanceEvent._id}`,
           containerId: container._id,
           type: "CLEARANCE_STAGE",
           titleEnglish: "Customs Duty Assessed",
@@ -556,6 +557,7 @@ router.post(
         try {
           await createEventNotifications({
             recipientIds: [container.importer],
+            eventKey: `payment-failed:${failedPayment._id}`,
             containerId: container._id,
             type: "PAYMENT",
 
@@ -718,6 +720,7 @@ router.post(
               container.importer,
               container.assignedAgent,
             ].filter(Boolean),
+            eventKey: `payment-success:${payment._id}`,
 
             containerId: container._id,
             type: "PAYMENT",

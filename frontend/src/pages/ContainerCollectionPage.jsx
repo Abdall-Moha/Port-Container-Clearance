@@ -22,6 +22,7 @@ function ContainerCollectionPage() {
   const [containers, setContainers] = useState([]);
   const [releaseOrders, setReleaseOrders] = useState([]);
   const [gateCodes, setGateCodes] = useState({});
+  const [collectionErrors, setCollectionErrors] = useState({});
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [collectingId, setCollectingId] = useState("");
@@ -50,7 +51,14 @@ function ContainerCollectionPage() {
 
   const pendingCollections = useMemo(() => {
     const ordersByContainerId = new Map();
-    for (const order of releaseOrders) {
+    const newestFirst = [...releaseOrders].sort((left, right) =>
+      new Date(right.createdAt || right.issuedAt || 0).getTime() -
+      new Date(left.createdAt || left.issuedAt || 0).getTime() ||
+      String(right._id).localeCompare(String(left._id)),
+    );
+
+    // Keep only the latest order so a revoked history entry cannot hide its replacement.
+    for (const order of newestFirst) {
       const containerId = String(order.container?._id || order.container);
       if (!ordersByContainerId.has(containerId)) ordersByContainerId.set(containerId, order);
     }
@@ -59,29 +67,33 @@ function ContainerCollectionPage() {
       .filter((container) =>
         container.currentStage === "RELEASED" &&
         container.status === "ACTIVE" &&
-        String(container.assignedAgent?._id || container.assignedAgent) === String(user?._id),
+        String(container.assignedAgent?._id || container.assignedAgent) === String(user?.id),
       )
       .map((container) => ({ container, order: ordersByContainerId.get(String(container._id)) }))
-      .filter(({ order }) => order && order.status !== "REVOKED" && !order.isRevoked && !order.gateCodeUsed);
-  }, [containers, releaseOrders, user?._id]);
+      .filter(({ order }) => order?.status === "ISSUED" && !order.isRevoked && !order.gateCodeUsed);
+  }, [containers, releaseOrders, user?.id]);
 
   // Submit the entered Gate Code to the existing authenticated collection endpoint.
-  async function collectContainer(event, order, container) {
+  async function collectContainer(event, order) {
     event.preventDefault();
     const gateCode = gateCodes[order._id] || "";
     if (!/^\d{6}$/.test(gateCode) || collectingId) return;
 
-    setErrorMessage("");
+    setCollectionErrors((current) => ({ ...current, [order._id]: "" }));
     setSuccessMessage("");
     setCollectingId(order._id);
 
     try {
-      const response = await api.patch(`/release-orders/${order._id}/collect`, { gateCode });
-      setSuccessMessage(response.data?.message || `${container.containerNumber} was collected successfully.`);
+      await api.patch(`/release-orders/${order._id}/collect`, { gateCode });
+      setSuccessMessage("Correct Code. Container collected successfully.");
       setGateCodes((current) => ({ ...current, [order._id]: "" }));
       await refresh();
     } catch (error) {
-      setErrorMessage(error.response?.data?.message || "Unable to collect this container. Check the Gate Code and try again.");
+      const responseMessage = error.response?.data?.message || "Unable to collect this container. Please try again.";
+      const fieldMessage = /incorrect gate code/i.test(responseMessage)
+        ? "Incorrect Code"
+        : responseMessage;
+      setCollectionErrors((current) => ({ ...current, [order._id]: fieldMessage }));
     } finally {
       setCollectingId("");
     }
@@ -100,9 +112,9 @@ function ContainerCollectionPage() {
     </header>
 
     {errorMessage && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{errorMessage}</p>}
-    {successMessage && <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{successMessage}</p>}
+    {successMessage && <p role="status" className="text-sm font-semibold text-emerald-700">{successMessage}</p>}
 
-    {isLoading ? <p role="status" className="rounded-2xl bg-white p-12 text-center text-sm font-semibold text-slate-500">Loading assigned containers…</p> : pendingCollections.length === 0 ? (
+    {isLoading ? <p role="status" className="rounded-2xl bg-white p-12 text-center text-sm font-semibold text-slate-500">Loading assigned containers…</p> : errorMessage ? null : pendingCollections.length === 0 ? (
       <section className="rounded-2xl border border-slate-200 bg-white px-5 py-14 text-center shadow-sm">
         <FaBox className="mx-auto text-3xl text-slate-300" />
         <h2 className="mt-3 font-extrabold text-[#172554]">No containers awaiting collection</h2>
@@ -119,7 +131,7 @@ function ContainerCollectionPage() {
             <Info label="Container size" value={container.size} />
             <Info label="Release Order" value="Active · Ready for collection" />
           </div>
-          <form onSubmit={(event) => void collectContainer(event, order, container)} className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <form onSubmit={(event) => void collectContainer(event, order)} className="flex flex-col gap-2 sm:flex-row sm:items-end">
             <label className="block min-w-0 flex-1 sm:min-w-48">
               <span className="mb-1 block text-xs font-extrabold text-slate-600">Six-digit Gate Code</span>
               <input
@@ -130,12 +142,17 @@ function ContainerCollectionPage() {
                 pattern="[0-9]{6}"
                 maxLength={6}
                 value={gateCodes[order._id] || ""}
-                onChange={(event) => setGateCodes((current) => ({ ...current, [order._id]: event.target.value.replace(/\D/g, "").slice(0, 6) }))}
+                onChange={(event) => {
+                  setGateCodes((current) => ({ ...current, [order._id]: event.target.value.replace(/\D/g, "").slice(0, 6) }));
+                  setCollectionErrors((current) => ({ ...current, [order._id]: "" }));
+                  setSuccessMessage("");
+                }}
                 placeholder="000000"
                 required
                 aria-label={`Gate Code for ${container.containerNumber}`}
                 className="w-full rounded-lg border border-slate-200 px-3 py-2.5 font-mono tracking-[0.2em] outline-none focus:border-[#2B4593] focus:ring-4 focus:ring-blue-100"
               />
+              {collectionErrors[order._id] && <span role="alert" className="mt-1 block text-xs font-semibold text-rose-600">{collectionErrors[order._id]}</span>}
             </label>
             <button type="submit" disabled={collectingId === order._id || (gateCodes[order._id] || "").length !== 6} className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#2B4593] px-4 py-2.5 text-sm font-extrabold text-white transition hover:bg-[#21377a] disabled:cursor-not-allowed disabled:opacity-50">
               {collectingId === order._id ? <><span className="size-4 animate-spin rounded-full border-2 border-white/40 border-t-white" /> Collecting…</> : <><FaTruck /> Record Collection</>}

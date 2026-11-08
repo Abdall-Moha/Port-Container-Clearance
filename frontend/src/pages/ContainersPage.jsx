@@ -139,6 +139,19 @@ function ContainersPage() {
     return () => { isMounted = false; };
   }, [stageFilter]);
 
+  // Open a container selected from a dashboard link after the authorized list loads.
+  useEffect(() => {
+    const requestedContainerId = searchParams.get("container");
+    if (!requestedContainerId || isLoading) return;
+
+    const container = containers.find((item) => String(item._id) === requestedContainerId);
+    if (container) setSelectedContainer(container);
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("container");
+    setSearchParams(nextParams, { replace: true });
+  }, [containers, isLoading, searchParams, setSearchParams]);
+
   // Load Bills of Lading visible to the current role before container registration.
   const openRegistration = useCallback(async (preferredBillOfLadingId = "") => {
     setRegistrationError("");

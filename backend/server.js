@@ -12,11 +12,14 @@ import DocumentRoute from "./routes/DocumentRoute.js";
 import DocumentVersionRoute from "./routes/DocumentVersionRoute.js";
 import ClearanceEventRoute from "./routes/ClearanceEventRoute.js";
 import DutyRateRoute from "./routes/DutyRateRoute.js";
+import DemurrageRateRoute from "./routes/DemurrageRateRoute.js";
 import PaymentRoute from "./routes/PaymentRoute.js";
 import InspectionRoute from "./routes/InspectionRoute.js";
 import WebhookDeliveryRoute from "./routes/WebhookDeliveryRoute.js";
 import ReleaseOrderRoute from "./routes/ReleaseOrderRoute.js";
 import NotificationRoute from "./routes/NotificationRoute.js";
+import ReportRoute from "./routes/ReportRoute.js";
+import DashboardRoute from "./routes/DashboardRoute.js";
 import { startWebhookRetryWorker } from "./services/WebhookRetryWorker.js";
 
 import {RateLimitingMiddleware} from "./middleware/RateLimitingMiddleware.js";
@@ -45,11 +48,14 @@ app.use("/api/documents", DocumentRoute);
 app.use("/api/document-versions", DocumentVersionRoute);
 app.use("/api/clearance-events", ClearanceEventRoute);
 app.use("/api/duty-rates", DutyRateRoute);
+app.use("/api/demurrage-rates", DemurrageRateRoute);
 app.use("/api/payments", PaymentRoute);
 app.use("/api/inspections", InspectionRoute);
 app.use("/api/webhooks", WebhookDeliveryRoute);
 app.use("/api/release-orders", ReleaseOrderRoute);
 app.use("/api/notifications", NotificationRoute);
+app.use("/api/reports", ReportRoute);
+app.use("/api/dashboard", DashboardRoute);
 
 // Handles unknown routes.
 app.use((req, res, next) => {

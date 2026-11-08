@@ -92,6 +92,13 @@ export function AuthProvider({ children }) {
     setIsLoading(false);
   }
 
+  // Refresh the shared safe user fields after the authenticated profile is edited.
+  function updateUserProfile(profile) {
+    const safeUser = getSafeUser(profile);
+    setUser(safeUser);
+    if (token) saveStoredSession(token, safeUser);
+  }
+
   const value = {
     token,
     user,
@@ -99,6 +106,7 @@ export function AuthProvider({ children }) {
     isLoading,
     signIn,
     signOut,
+    updateUserProfile,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
   FaAnchor,
@@ -9,6 +9,7 @@ import {
 } from "react-icons/fa6";
 import useAuth from "../context/useAuth.js";
 import { getDashboardNavigation } from "../config/dashboardNavigation.js";
+import api from "../config/api.js";
 
 // Format backend role constants as readable labels for the dashboard header.
 function formatRole(role) {
@@ -28,6 +29,41 @@ function DashboardLayout() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const navigationItems = getDashboardNavigation(user?.role);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  // Keep the sidebar unread badge synchronized with authenticated server counts.
+  useEffect(() => {
+    if (!user?.id) return undefined;
+
+    let isMounted = true;
+    async function loadUnreadCount() {
+      try {
+        const response = await api.get("/notifications/unread-count");
+        if (isMounted) setUnreadCount(Number(response.data?.unreadCount) || 0);
+      } catch {
+        // Preserve the last known count when the count endpoint is temporarily unavailable.
+      }
+    }
+
+    function handleCountUpdate(event) {
+      const nextCount = Number(event.detail?.unreadCount);
+      if (Number.isFinite(nextCount)) setUnreadCount(nextCount);
+      else void loadUnreadCount();
+    }
+
+    function handleNewProfile() {
+      void loadUnreadCount();
+    }
+
+    void loadUnreadCount();
+    window.addEventListener("notifications:unread-count", handleCountUpdate);
+    window.addEventListener("notifications:changed", handleNewProfile);
+    return () => {
+      isMounted = false;
+      window.removeEventListener("notifications:unread-count", handleCountUpdate);
+      window.removeEventListener("notifications:changed", handleNewProfile);
+    };
+  }, [user?.id]);
 
   // Close the mobile sidebar when a dashboard link is selected.
   function closeSidebar() {
@@ -75,7 +111,8 @@ function DashboardLayout() {
             }`
           }
         >
-          <ItemIcon className="text-base" /> {item.label}
+          <ItemIcon className="text-base" /> <span className="flex-1">{item.label}</span>
+          {item.label === "Notifications" && unreadCount > 0 && <span aria-label={`${unreadCount} unread notifications`} className="min-w-5 rounded-full bg-rose-500 px-1.5 py-0.5 text-center text-[10px] font-black text-white">{unreadCount > 99 ? "99+" : unreadCount}</span>}
         </NavLink>
       );
     });

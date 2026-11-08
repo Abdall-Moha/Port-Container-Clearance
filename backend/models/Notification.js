@@ -18,6 +18,13 @@ const NotificationSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Internal event identifier used to prevent duplicate recipient notices.
+    eventKey: {
+      type: String,
+      default: undefined,
+      select: false,
+    },
+
     // Identify the reason for the notification.
     type: {
       type: String,
@@ -91,6 +98,10 @@ const NotificationSchema = new mongoose.Schema(
 // Make it faster to find a user's latest notifications and unread notifications.
 NotificationSchema.index({ recipient: 1, createdAt: -1 });
 NotificationSchema.index({ recipient: 1, isRead: 1 });
+NotificationSchema.index(
+  { recipient: 1, eventKey: 1 },
+  { unique: true, partialFilterExpression: { eventKey: { $type: "string" } } },
+);
 
 const Notification =
   mongoose.models.Notification ||

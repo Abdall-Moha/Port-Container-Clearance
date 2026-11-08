@@ -11,6 +11,12 @@ import RoleMiddleware from "../middleware/RoleMiddleware.js";
 import createEventNotifications from "../services/NotificationService.js";
 
 const router = express.Router();
+const requiredDocumentTypes = [
+  "COMMERCIAL_INVOICE",
+  "PACKING_LIST",
+  "BILL_OF_LADING",
+  "CERTIFICATE_OF_ORIGIN",
+];
 
 // Checks whether a user is allowed to access a container's documents.
 // Importers can access their own containers.
@@ -308,6 +314,7 @@ router.patch(
           ].filter(Boolean),
 
           containerId: container._id,
+          eventKey: `document-review:${updatedDocument._id}:${versionNumber}:${status}`,
           type: "DOCUMENT_REVIEW",
 
           titleEnglish: `Document ${status}`,
@@ -334,6 +341,53 @@ router.patch(
           "Document review notification failed:",
           notificationError.message,
         );
+      }
+
+      // Tell the container stakeholders when every current required version is approved.
+      if (status === "APPROVED") {
+        try {
+          const requiredDocuments = await Document.find({
+            container: container._id,
+            documentType: { $in: requiredDocumentTypes },
+          }).select("documentType latestVersion reviewedVersionNumber reviewStatus");
+
+          const allRequiredDocumentsApproved = requiredDocumentTypes.every((documentType) => {
+            const requiredDocument = requiredDocuments.find(
+              (item) => item.documentType === documentType,
+            );
+            return Boolean(
+              requiredDocument &&
+              requiredDocument.reviewStatus === "APPROVED" &&
+              requiredDocument.reviewedVersionNumber === requiredDocument.latestVersion,
+            );
+          });
+
+          if (allRequiredDocumentsApproved) {
+            const approvedVersionsKey = requiredDocumentTypes
+              .map((documentType) => {
+                const requiredDocument = requiredDocuments.find(
+                  (item) => item.documentType === documentType,
+                );
+                return `${requiredDocument._id}:${requiredDocument.latestVersion}`;
+              })
+              .sort()
+              .join("|");
+
+            await createEventNotifications({
+              recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
+              eventKey: `documents-approved:${container._id}:${approvedVersionsKey}`,
+              containerId: container._id,
+              type: "DOCUMENT_REVIEW",
+              titleEnglish: "Documents Approved",
+              titleSomali: "Dukumentiyada Waa La Ansixiyay",
+              messageEnglish: `All required documents for container ${container.containerNumber} are approved. It is eligible for duty assessment.`,
+              messageSomali: `Dukumentiyada looga baahan yahay konteenarka ${container.containerNumber} waa la ansixiyay. Wuxuu u qalmaa qiimaynta cashuurta.`,
+              sendSMS: true,
+            });
+          }
+        } catch (notificationError) {
+          console.error("Documents approved notification failed:", notificationError.message);
+        }
       }
 
       return res.status(200).json({

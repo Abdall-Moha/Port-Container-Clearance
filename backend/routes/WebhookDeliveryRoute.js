@@ -100,7 +100,7 @@ router.get(
       const deliveries = await WebhookDelivery.find()
         .sort({ createdAt: -1 })
         .populate("shippingLine", "name code")
-        .populate("container", "containerNumber")
+        .populate("container", "containerNumber status")
         .populate("clearanceEvent");
 
       return res.status(200).json({
@@ -134,7 +134,7 @@ router.get(
         req.params.id,
       )
         .populate("shippingLine", "name code")
-        .populate("container", "containerNumber")
+        .populate("container", "containerNumber status")
         .populate("clearanceEvent");
 
       if (!delivery) {

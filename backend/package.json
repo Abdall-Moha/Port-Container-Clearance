@@ -11,7 +11,8 @@
     "start": "nodemon server.js",
     "dev": "nodemon server.js",
     "seed": "nodemon scripts/seed.js",
-    "migrate:release-orders": "node scripts/migrateReleaseOrderHistory.js"
+    "migrate:release-orders": "node scripts/migrateReleaseOrderHistory.js",
+    "migrate:legacy-gate-codes": "node scripts/migrateLegacyGateCodes.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

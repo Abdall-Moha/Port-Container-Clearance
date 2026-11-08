@@ -1,6 +1,5 @@
 import express from "express";
-import { randomBytes, randomInt, scrypt as scryptCallback, timingSafeEqual } from "crypto";
-import { promisify } from "util";
+import { randomBytes, randomInt } from "crypto";
 import fs from "fs/promises";
 
 import ReleaseOrder from "../models/ReleaseOrder.js";
@@ -19,9 +18,68 @@ import {
   generateReleaseOrderPDF,
   getReleaseOrderPDFPath,
 } from "../services/ReleaseOrderPDFService.js";
+import { hashGateCode, verifyGateCode } from "../services/GateCodeService.js";
 
 const router = express.Router();
-const scrypt = promisify(scryptCallback);
+
+// Keep failed attempts per agent and order; this in-memory guard is limited to one Node process.
+const gateCodeAttempts = new Map();
+const gateCodeAttemptLimit = 5;
+const gateCodeAttemptWindowMs = 15 * 60 * 1000;
+
+// Reserve a Gate Code attempt so concurrent requests cannot exceed the configured limit.
+function reserveGateCodeAttempt(agentId, releaseOrderId) {
+  const now = Date.now();
+  const key = `${agentId}:${releaseOrderId}`;
+
+  // Remove expired entries that have no request currently checking a code.
+  for (const [attemptKey, attempt] of gateCodeAttempts) {
+    if (now - attempt.windowStartedAt >= gateCodeAttemptWindowMs && attempt.pendingAttempts === 0) {
+      gateCodeAttempts.delete(attemptKey);
+    }
+  }
+
+  let attempt = gateCodeAttempts.get(key);
+  if (!attempt || now - attempt.windowStartedAt >= gateCodeAttemptWindowMs) {
+    if (attempt?.pendingAttempts) {
+      attempt.windowStartedAt = now;
+      attempt.failedAttempts = 0;
+    } else {
+      attempt = { windowStartedAt: now, failedAttempts: 0, pendingAttempts: 0 };
+      gateCodeAttempts.set(key, attempt);
+    }
+  }
+
+  if (attempt.failedAttempts + attempt.pendingAttempts >= gateCodeAttemptLimit) {
+    return {
+      limited: true,
+      retryAfterSeconds: Math.max(
+        1,
+        Math.ceil((attempt.windowStartedAt + gateCodeAttemptWindowMs - now) / 1000),
+      ),
+    };
+  }
+
+  attempt.pendingAttempts += 1;
+  let isFinished = false;
+
+  // Settle the reserved attempt after verification, counting only an incorrect code.
+  function finishAsFailed(isFailed) {
+    if (isFinished) return;
+    isFinished = true;
+    attempt.pendingAttempts = Math.max(0, attempt.pendingAttempts - 1);
+    if (isFailed) attempt.failedAttempts += 1;
+    if (attempt.failedAttempts === 0 && attempt.pendingAttempts === 0) {
+      gateCodeAttempts.delete(key);
+    }
+  }
+
+  return {
+    limited: false,
+    fail: () => finishAsFailed(true),
+    release: () => finishAsFailed(false),
+  };
+}
 
 // Check whether the logged-in user can access a container.
 function canAccessContainer(user, container) {
@@ -62,32 +120,6 @@ function generateGateCode() {
 // Create a human-readable order reference with a random suffix protected by a unique index.
 function generateReleaseOrderNumber() {
   return `RO-${Date.now()}-${randomBytes(4).toString("hex").toUpperCase()}`;
-}
-
-// Store Gate Codes as salted hashes so API responses and database reads cannot reveal them.
-async function hashGateCode(gateCode) {
-  const salt = randomBytes(16).toString("hex");
-  const hash = await scrypt(gateCode, salt, 64);
-  return `${salt}:${hash.toString("hex")}`;
-}
-
-// Compare legacy plaintext Gate Codes without an early character-by-character exit.
-function safelyMatchesLegacyCode(savedCode, submittedCode) {
-  if (typeof savedCode !== "string" || savedCode.length !== submittedCode.length) return false;
-  return timingSafeEqual(Buffer.from(savedCode), Buffer.from(submittedCode));
-}
-
-// Verify new salted hashes and continue to support existing legacy codes until they are collected.
-async function verifyGateCode(savedValue, submittedCode) {
-  const hashParts = String(savedValue || "").split(":");
-  if (hashParts.length !== 2) return safelyMatchesLegacyCode(savedValue, submittedCode);
-
-  const [salt, expectedHashHex] = hashParts;
-  if (!/^[a-f0-9]{32}$/.test(salt) || !/^[a-f0-9]{128}$/.test(expectedHashHex)) return false;
-
-  const actualHash = await scrypt(submittedCode, salt, 64);
-  const expectedHash = Buffer.from(expectedHashHex, "hex");
-  return timingSafeEqual(actualHash, expectedHash);
 }
 
 // Hide internal file paths and Gate Code values from all JSON responses.
@@ -278,6 +310,7 @@ router.post(
         try {
           await createEventNotifications({
             recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
+            eventKey: `release-order-issued:${releaseOrder._id}`,
             containerId: container._id,
             type: "RELEASE_ORDER",
             titleEnglish: isReplacement ? "Replacement Release Order Issued" : "Release Order Created",
@@ -465,12 +498,33 @@ router.patch(
         });
       }
 
+      // Reserve a per-agent and per-order attempt before the expensive code check.
+      const attempt = reserveGateCodeAttempt(req.user._id, releaseOrder._id);
+      if (attempt.limited) {
+        res.set("Retry-After", String(attempt.retryAfterSeconds));
+        return res.status(429).json({
+          message: "Too many incorrect Gate Code attempts. Please try again after the 15-minute limit window expires.",
+        });
+      }
+
       // Verify the code against its salted hash, or safely support an older plaintext record.
-      if (!(await verifyGateCode(releaseOrder.gateCode, gateCode))) {
+      let isGateCodeCorrect;
+      try {
+        isGateCodeCorrect = await verifyGateCode(releaseOrder.gateCode, gateCode);
+      } catch (verificationError) {
+        attempt.release();
+        throw verificationError;
+      }
+
+      if (!isGateCodeCorrect) {
+        attempt.fail();
         return res.status(400).json({
           message: "Incorrect Gate Code.",
         });
       }
+
+      // A correct code releases its reserved slot without counting as a failed attempt.
+      attempt.release();
 
       const isLegacyCode = /^\d{6}$/.test(releaseOrder.gateCode);
       const upgradedGateCodeHash = isLegacyCode ? await hashGateCode(gateCode) : null;
@@ -595,6 +649,7 @@ router.patch(
       try {
         await createEventNotifications({
           recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
+          eventKey: `container-collected:${clearanceEvent._id}`,
           containerId: container._id,
           type: "RELEASE_ORDER",
           titleEnglish: "Container Collected",
@@ -715,6 +770,7 @@ router.patch(
         try {
           await createEventNotifications({
             recipientIds: [notificationContainer.importer, notificationContainer.assignedAgent].filter(Boolean),
+            eventKey: `release-order-revoked:${releaseOrder._id}`,
             containerId: notificationContainer._id,
             type: "RELEASE_ORDER",
             titleEnglish: "Release Order Revoked",
