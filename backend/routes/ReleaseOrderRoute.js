@@ -1,5 +1,6 @@
 import express from "express";
-import { randomInt } from "crypto";
+import { randomBytes, randomInt, scrypt as scryptCallback, timingSafeEqual } from "crypto";
+import { promisify } from "util";
 import fs from "fs/promises";
 
 import ReleaseOrder from "../models/ReleaseOrder.js";
@@ -20,6 +21,7 @@ import {
 } from "../services/ReleaseOrderPDFService.js";
 
 const router = express.Router();
+const scrypt = promisify(scryptCallback);
 
 // Check whether the logged-in user can access a container.
 function canAccessContainer(user, container) {
@@ -57,18 +59,50 @@ function generateGateCode() {
   return String(randomInt(0, 1000000)).padStart(6, "0");
 }
 
-// Hide internal file paths and keep Gate Codes out of Importer JSON responses.
-function sanitizeReleaseOrder(releaseOrder, role) {
+// Create a human-readable order reference with a random suffix protected by a unique index.
+function generateReleaseOrderNumber() {
+  return `RO-${Date.now()}-${randomBytes(4).toString("hex").toUpperCase()}`;
+}
+
+// Store Gate Codes as salted hashes so API responses and database reads cannot reveal them.
+async function hashGateCode(gateCode) {
+  const salt = randomBytes(16).toString("hex");
+  const hash = await scrypt(gateCode, salt, 64);
+  return `${salt}:${hash.toString("hex")}`;
+}
+
+// Compare legacy plaintext Gate Codes without an early character-by-character exit.
+function safelyMatchesLegacyCode(savedCode, submittedCode) {
+  if (typeof savedCode !== "string" || savedCode.length !== submittedCode.length) return false;
+  return timingSafeEqual(Buffer.from(savedCode), Buffer.from(submittedCode));
+}
+
+// Verify new salted hashes and continue to support existing legacy codes until they are collected.
+async function verifyGateCode(savedValue, submittedCode) {
+  const hashParts = String(savedValue || "").split(":");
+  if (hashParts.length !== 2) return safelyMatchesLegacyCode(savedValue, submittedCode);
+
+  const [salt, expectedHashHex] = hashParts;
+  if (!/^[a-f0-9]{32}$/.test(salt) || !/^[a-f0-9]{128}$/.test(expectedHashHex)) return false;
+
+  const actualHash = await scrypt(submittedCode, salt, 64);
+  const expectedHash = Buffer.from(expectedHashHex, "hex");
+  return timingSafeEqual(actualHash, expectedHash);
+}
+
+// Hide internal file paths and Gate Code values from all JSON responses.
+function sanitizeReleaseOrder(releaseOrder) {
   const data = releaseOrder.toObject ? releaseOrder.toObject() : { ...releaseOrder };
   delete data.pdfPath;
-  if (role === "IMPORTER") delete data.gateCode;
+  delete data.gateCode;
+  data.status = data.isRevoked ? "REVOKED" : data.status || "ISSUED";
   return data;
 }
 
 /*
   POST /api/release-orders/:containerId/create
 
-  Customs Officer creates a release order.
+  Customs Officer creates an initial or replacement release order.
 
   Requirements:
   - Container must have passed its latest inspection at INSPECTION stage.
@@ -95,15 +129,6 @@ router.post(
 
       if (container.status === "INACTIVE") {
         return res.status(409).json({ message: "A release order cannot be created for an inactive container." });
-      }
-
-      // Only a container still at INSPECTION may be advanced by this operation.
-      if (container.currentStage !== "INSPECTION") {
-        return res.status(409).json({
-          message:
-            "A release order can only be created for a container that has not yet been released.",
-          currentStage: container.currentStage,
-        });
       }
 
       if (container.status !== "ACTIVE") {
@@ -138,31 +163,41 @@ router.post(
         });
       }
 
-      // Prevent creating multiple release orders for the same container.
-      const existingOrder = await ReleaseOrder.findOne({
+      // Allow the initial release after inspection or a replacement after the latest order was revoked.
+      const previousOrder = await ReleaseOrder.findOne({
         container: container._id,
-      });
+      }).sort({ createdAt: -1, _id: -1 });
+      const previousStatus = previousOrder
+        ? previousOrder.isRevoked
+          ? "REVOKED"
+          : previousOrder.status || "ISSUED"
+        : null;
+      const isFirstIssue = container.currentStage === "INSPECTION" && !previousOrder;
+      const isReplacement = container.currentStage === "RELEASED" && previousStatus === "REVOKED";
 
-      if (existingOrder) {
+      if (!isFirstIssue && !isReplacement) {
         return res.status(409).json({
-          message:
-            "A release order already exists for this container.",
-          releaseOrder: existingOrder,
+          message: previousStatus === "ISSUED"
+            ? "An issued Release Order already exists for this container."
+            : "A Release Order can be issued only after inspection or as a replacement for a revoked order.",
+          currentStage: container.currentStage,
         });
       }
 
-      // Generate a unique six-digit Gate Code.
-      let gateCode = generateGateCode();
-
-      while (await ReleaseOrder.exists({ gateCode })) {
-        gateCode = generateGateCode();
-      }
+      // Generate a one-time code for the PDF and store only its salted hash.
+      const gateCode = generateGateCode();
+      const storedGateCode = await hashGateCode(gateCode);
 
       // Create the release order.
       const releaseOrder = await ReleaseOrder.create({
         container: container._id,
         releasedBy: req.user._id,
-        gateCode,
+        releaseOrderNumber: generateReleaseOrderNumber(),
+        status: "ISSUED",
+        issuedAt: new Date(),
+        replaces: isReplacement ? previousOrder._id : null,
+        isRevoked: false,
+        gateCode: storedGateCode,
       });
 
       let generatedPdfPath = "";
@@ -175,6 +210,7 @@ router.post(
           releaseOrder._id,
         )
           .populate("releasedBy", "fullName email")
+          .populate("replaces", "releaseOrderNumber status")
           .populate({
             path: "container",
             populate: [
@@ -193,6 +229,7 @@ router.post(
           releaseOrder: populatedOrder,
           container: populatedOrder.container,
           payment: successfulPayment,
+          gateCode,
         });
         generatedPdfPath = pdfPath;
 
@@ -201,35 +238,37 @@ router.post(
 
         await populatedOrder.save();
 
-        // Move to RELEASED only after the passing inspection and order are ready.
-        const releasedContainer = await Container.findOneAndUpdate(
-          {
-            _id: container._id,
-            currentStage: "INSPECTION",
-            status: "ACTIVE",
-          },
-          { $set: { currentStage: "RELEASED" } },
-          { returnDocument: "after" },
-        );
+        if (isFirstIssue) {
+          // Advance only the first issue; replacements do not change the clearance stage.
+          const releasedContainer = await Container.findOneAndUpdate(
+            {
+              _id: container._id,
+              currentStage: "INSPECTION",
+              status: "ACTIVE",
+            },
+            { $set: { currentStage: "RELEASED" } },
+            { returnDocument: "after" },
+          );
 
-        if (!releasedContainer) {
-          throw new Error("Container stage changed before release could be completed.");
-        }
-        movedToReleased = true;
+          if (!releasedContainer) {
+            throw new Error("Container stage changed before release could be completed.");
+          }
+          movedToReleased = true;
 
-        // Record the new stage transition for history and webhook consumers.
-        releaseEvent = await ClearanceEvent.create({
-          container: container._id,
-          fromStage: "INSPECTION",
-          toStage: "RELEASED",
-          performedBy: req.user._id,
-          reason: "Release Order created after the latest inspection passed.",
-        });
+          // Record the stage transition only for the initial Release Order.
+          releaseEvent = await ClearanceEvent.create({
+            container: container._id,
+            fromStage: "INSPECTION",
+            toStage: "RELEASED",
+            performedBy: req.user._id,
+            reason: "Release Order created after the latest inspection passed.",
+          });
 
-        try {
-          await createAndSendWebhook(releaseEvent._id);
-        } catch (webhookError) {
-          console.error("Release stage webhook failed:", webhookError);
+          try {
+            await createAndSendWebhook(releaseEvent._id);
+          } catch (webhookError) {
+            console.error("Release stage webhook failed:", webhookError);
+          }
         }
 
         // Return the final stage instead of the pre-release populated snapshot.
@@ -241,10 +280,14 @@ router.post(
             recipientIds: [container.importer, container.assignedAgent].filter(Boolean),
             containerId: container._id,
             type: "RELEASE_ORDER",
-            titleEnglish: "Release Order Created",
-            titleSomali: "Amarka Sii-daynta Waa La Sameeyay",
-            messageEnglish: `A release order has been created for container ${container.containerNumber}. The container is ready for collection by its assigned Clearing Agent.`,
-            messageSomali: `Amar sii-dayn ayaa loo sameeyay konteenarka ${container.containerNumber}. Konteenarka waxaa qaadi kara Wakiilka Kastamka ee loo xilsaaray.`,
+            titleEnglish: isReplacement ? "Replacement Release Order Issued" : "Release Order Created",
+            titleSomali: isReplacement ? "Amar Beddel ah ayaa La Soo Saaray" : "Amarka Sii-daynta Waa La Sameeyay",
+            messageEnglish: isReplacement
+              ? `A replacement Release Order (${releaseOrder.releaseOrderNumber}) has been issued for container ${container.containerNumber}.`
+              : `A release order has been created for container ${container.containerNumber}. The container is ready for collection by its assigned Clearing Agent.`,
+            messageSomali: isReplacement
+              ? `Amar sii-dayn beddel ah ayaa loo sameeyay konteenarka ${container.containerNumber}.`
+              : `Amar sii-dayn ayaa loo sameeyay konteenarka ${container.containerNumber}. Konteenarka waxaa qaadi kara Wakiilka Kastamka ee loo xilsaaray.`,
             sendSMS: true,
           });
         } catch (notificationError) {
@@ -254,7 +297,9 @@ router.post(
 
         return res.status(201).json({
           message:
-            "Release order, PDF, and QR code created successfully.",
+            isReplacement
+              ? "Replacement Release Order, PDF, and QR code created successfully."
+              : "Release order, PDF, and QR code created successfully.",
           releaseOrder: sanitizeReleaseOrder(populatedOrder, req.user.role),
         });
       } catch (generationError) {
@@ -284,8 +329,7 @@ router.post(
     } catch (error) {
       if (error.code === 11000) {
         return res.status(409).json({
-          message:
-            "A release order or Gate Code already exists.",
+          message: "An active Release Order or unique Release Order number already exists for this request.",
         });
       }
 
@@ -320,10 +364,11 @@ router.get(
     const releaseOrders = await ReleaseOrder.find({
       container: { $in: accessibleContainers.map((container) => container._id) },
     })
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .populate("releasedBy", "fullName")
       .populate("revokedBy", "fullName")
       .populate("collectedBy", "fullName")
+      .populate("replaces", "releaseOrderNumber status")
       .populate({
         path: "container",
         select: "containerNumber billOfLading importer assignedAgent size currentStage status",
@@ -360,7 +405,7 @@ router.patch(
   RoleMiddleware("CLEARING_AGENT"),
   async (req, res) => {
     try {
-      const { gateCode } = req.body;
+      const gateCode = req.body?.gateCode;
 
       // Validate the six-digit Gate Code.
       if (!/^\d{6}$/.test(gateCode || "")) {
@@ -406,8 +451,8 @@ router.patch(
         });
       }
 
-      // A revoked release order cannot be used.
-      if (releaseOrder.isRevoked) {
+      // Only the currently issued Release Order may authorize a collection.
+      if (releaseOrder.isRevoked || (releaseOrder.status && releaseOrder.status !== "ISSUED")) {
         return res.status(403).json({
           message: "This release order has been revoked.",
         });
@@ -420,12 +465,15 @@ router.patch(
         });
       }
 
-      // Check whether the submitted Gate Code matches.
-      if (releaseOrder.gateCode !== gateCode) {
+      // Verify the code against its salted hash, or safely support an older plaintext record.
+      if (!(await verifyGateCode(releaseOrder.gateCode, gateCode))) {
         return res.status(400).json({
           message: "Incorrect Gate Code.",
         });
       }
+
+      const isLegacyCode = /^\d{6}$/.test(releaseOrder.gateCode);
+      const upgradedGateCodeHash = isLegacyCode ? await hashGateCode(gateCode) : null;
 
       // The container must still be waiting for collection.
       if (container.currentStage !== "RELEASED") {
@@ -440,15 +488,21 @@ router.patch(
       const claimedReleaseOrder = await ReleaseOrder.findOneAndUpdate(
         {
           _id: releaseOrder._id,
-          gateCode,
+          gateCode: releaseOrder.gateCode,
           isRevoked: false,
           gateCodeUsed: false,
+          $or: [
+            { status: "ISSUED" },
+            { status: { $exists: false } },
+          ],
         },
         {
           $set: {
             gateCodeUsed: true,
             collectedBy: req.user._id,
             collectedAt: new Date(),
+            status: "ISSUED",
+            ...(upgradedGateCodeHash ? { gateCode: upgradedGateCodeHash } : {}),
           },
         },
         { returnDocument: "after", runValidators: true },
@@ -583,7 +637,7 @@ router.patch(
 /*
   PATCH /api/release-orders/:id/revoke
 
-  Admin revokes a release order.
+  Customs Officer revokes an issued release order.
 
   Expected body:
   {
@@ -593,10 +647,10 @@ router.patch(
 router.patch(
   "/:id/revoke",
   AuthMiddleware,
-  RoleMiddleware("ADMIN"),
+  RoleMiddleware("CUSTOMS_OFFICER"),
   async (req, res) => {
     try {
-      const { reason } = req.body;
+      const reason = req.body?.reason;
 
       // Require a meaningful revocation reason.
       if (
@@ -620,16 +674,25 @@ router.patch(
         });
       }
 
-      const container = await Container.findById(releaseOrder.container).select("status");
-      if (container?.status === "INACTIVE") {
-        return res.status(409).json({ message: "Operational release-order changes are blocked for an inactive container." });
+      const currentStatus = releaseOrder.isRevoked ? "REVOKED" : releaseOrder.status || "ISSUED";
+      if (currentStatus !== "ISSUED") {
+        return res.status(409).json({ message: "Only an issued Release Order can be revoked." });
       }
 
-      // Claim revocation atomically so a concurrent collection cannot use this order.
+      // Revoke atomically so collection and repeated revocation cannot win at the same time.
       const revokedOrder = await ReleaseOrder.findOneAndUpdate(
-        { _id: releaseOrder._id, isRevoked: false, gateCodeUsed: false },
+        {
+          _id: releaseOrder._id,
+          isRevoked: false,
+          gateCodeUsed: false,
+          $or: [
+            { status: "ISSUED" },
+            { status: { $exists: false } },
+          ],
+        },
         {
           $set: {
+            status: "REVOKED",
             isRevoked: true,
             revokedBy: req.user._id,
             revocationReason: reason.trim(),
@@ -656,8 +719,8 @@ router.patch(
             type: "RELEASE_ORDER",
             titleEnglish: "Release Order Revoked",
             titleSomali: "Amarka Sii-daynta Waa La Laalay",
-            messageEnglish: `The release order for container ${notificationContainer.containerNumber} has been revoked. Reason: ${reason.trim()}`,
-            messageSomali: `Amarkii sii-daynta ee konteenarka ${notificationContainer.containerNumber} waa la laalay. Sababta: ${reason.trim()}`,
+            messageEnglish: `Release Order ${releaseOrder.releaseOrderNumber || ""} for container ${notificationContainer.containerNumber} has been revoked. Reason: ${reason.trim()}`,
+            messageSomali: `Amar sii-dayn ee konteenarka ${notificationContainer.containerNumber} waa la laalay. Sababta: ${reason.trim()}`,
             sendSMS: true,
           });
         } catch (notificationError) {
@@ -704,12 +767,14 @@ router.get(
         });
       }
 
+      const isRevoked = releaseOrder.isRevoked || releaseOrder.status === "REVOKED";
+
       if (releaseOrder.container.status === "INACTIVE") {
         return res.status(200).json({
           releaseOrderId: releaseOrder._id,
           containerNumber: releaseOrder.container.containerNumber,
           isValid: false,
-          isRevoked: releaseOrder.isRevoked,
+          isRevoked,
           isCollected: releaseOrder.gateCodeUsed,
           message: "This release order is not operationally valid.",
         });
@@ -720,10 +785,10 @@ router.get(
         releaseOrderId: releaseOrder._id,
         containerNumber:
           releaseOrder.container.containerNumber,
-        isValid: !releaseOrder.isRevoked,
-        isRevoked: releaseOrder.isRevoked,
+        isValid: !isRevoked && !releaseOrder.gateCodeUsed,
+        isRevoked,
         isCollected: releaseOrder.gateCodeUsed,
-        message: releaseOrder.isRevoked
+        message: isRevoked
           ? "This release order has been revoked."
           : releaseOrder.gateCodeUsed
             ? "This container has already been collected."
@@ -772,10 +837,11 @@ router.get(
       // Find the container's release order.
       const releaseOrder = await ReleaseOrder.findOne({
         container: container._id,
-      })
+      }).sort({ createdAt: -1, _id: -1 })
         .populate("releasedBy", "fullName email")
         .populate("collectedBy", "fullName email")
-        .populate("revokedBy", "fullName email");
+        .populate("revokedBy", "fullName email")
+        .populate("replaces", "releaseOrderNumber status");
 
       if (!releaseOrder) {
         return res.status(404).json({
@@ -916,7 +982,8 @@ router.get(
       )
         .populate("releasedBy", "fullName email")
         .populate("collectedBy", "fullName email")
-        .populate("revokedBy", "fullName email");
+        .populate("revokedBy", "fullName email")
+        .populate("replaces", "releaseOrderNumber status");
 
       if (!releaseOrder) {
         return res.status(404).json({

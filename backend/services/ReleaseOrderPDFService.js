@@ -36,6 +36,7 @@ async function generateReleaseOrderPDF({
   releaseOrder,
   container,
   payment,
+  gateCode,
 }) {
   // Make sure the required information is available.
   if (!releaseOrder || !container || !payment) {
@@ -142,7 +143,10 @@ async function generateReleaseOrderPDF({
     document.fillColor("#172554").font("Helvetica-Bold").fontSize(12)
       .text("RELEASE ORDER DETAILS", 58, 158);
     const details = [
-      ["Release Order ID", String(releaseOrder._id)],
+      ["Release Order Number", releaseOrder.releaseOrderNumber || "Not available"],
+      ...(releaseOrder.replaces
+        ? [["Replaces Order", releaseOrder.replaces.releaseOrderNumber || String(releaseOrder.replaces)]]
+        : []),
       ["Container Number", container.containerNumber],
       ["Bill of Lading Number", billOfLadingNumber],
       ["Importer Name", importerName],
@@ -161,21 +165,24 @@ async function generateReleaseOrderPDF({
       rowTop += 34;
     }
 
+    const gatePanelTop = Math.max(435, rowTop + 10);
+
     // Highlight the six-digit Gate Code while keeping it inside the protected PDF.
-    document.roundedRect(55, 435, 485, 58, 8).fill("#EFF6FF");
+    document.roundedRect(55, gatePanelTop, 485, 58, 8).fill("#EFF6FF");
     document.fillColor("#2B4593").font("Helvetica-Bold").fontSize(10)
-      .text("GATE CODE", 72, 450);
+      .text("GATE CODE", 72, gatePanelTop + 15);
     document.fillColor("#172554").font("Helvetica-Bold").fontSize(23)
-      .text(String(releaseOrder.gateCode || "Not available"), 205, 447, { align: "center", width: 185 });
+      .text(String(gateCode || "Not available"), 205, gatePanelTop + 12, { align: "center", width: 185 });
 
     // Include the tracking QR generated from the configured public tracking URL.
+    const qrHeadingTop = gatePanelTop + 79;
     document.fillColor("#172554").font("Helvetica-Bold").fontSize(11)
-      .text("PUBLIC CONTAINER TRACKING", 55, 514, { align: "center", width: 485 });
-    document.image(qrCodeBuffer, { x: 230, y: 535, width: 145, height: 145 });
+      .text("PUBLIC CONTAINER TRACKING", 55, qrHeadingTop, { align: "center", width: 485 });
+    document.image(qrCodeBuffer, { x: 230, y: qrHeadingTop + 21, width: 145, height: 145 });
     document.fillColor("#64748B").font("Helvetica").fontSize(9)
-      .text("Scan to view this container's public clearance progress.", 70, 690, { align: "center", width: 455 });
+      .text("Scan to view this container's public clearance progress.", 70, qrHeadingTop + 176, { align: "center", width: 455 });
     document.fillColor("#9F1239").font("Helvetica-Bold").fontSize(9)
-      .text("Keep the Gate Code secure. It is required for container collection.", 70, 725, { align: "center", width: 455 });
+      .text("Keep the Gate Code secure. It is required for container collection.", 70, qrHeadingTop + 211, { align: "center", width: 455 });
 
     // Finish generating the PDF.
     document.end();

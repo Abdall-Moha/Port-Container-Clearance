@@ -50,7 +50,7 @@ const roleNavigation = {
     { label: "Bill of Lading", to: "/dashboard/bills-of-lading", icon: FaFileLines, available: true },
     { label: "Documents", to: "/dashboard/documents", icon: FaFileCircleCheck, available: true },
     { label: "Payments", to: "/dashboard/payments", icon: FaCreditCard, available: true },
-    { label: "Collection", icon: FaUnlock },
+    { label: "Collection", to: "/dashboard/collection", icon: FaTruck, available: true },
     { label: "Release Orders", to: "/dashboard/release-orders", icon: FaFileLines, available: true },
     { label: "Notifications", icon: FaBell },
     { label: "Profile", icon: FaUser },

@@ -95,7 +95,8 @@ router.get("/track", publicTrackingRateLimit, async (req, res, next) => {
       .sort({ createdAt: 1 })
       .lean();
     const releaseOrder = await ReleaseOrder.findOne({ container: container._id })
-      .select("isRevoked gateCodeUsed")
+      .select("status isRevoked gateCodeUsed")
+      .sort({ createdAt: -1, _id: -1 })
       .lean();
 
     const arrivalEvent = events.find((event) => event.toStage === "ARRIVED");
@@ -110,7 +111,7 @@ router.get("/track", publicTrackingRateLimit, async (req, res, next) => {
       containerNumber: container.containerNumber,
       currentStage: container.currentStage,
       releaseOrderStatus: releaseOrder
-        ? releaseOrder.isRevoked
+        ? releaseOrder.isRevoked || releaseOrder.status === "REVOKED"
           ? "REVOKED"
           : releaseOrder.gateCodeUsed
             ? "COLLECTED"

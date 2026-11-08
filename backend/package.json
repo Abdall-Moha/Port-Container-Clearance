@@ -10,7 +10,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "nodemon server.js",
     "dev": "nodemon server.js",
-    "seed": "nodemon scripts/seed.js"
+    "seed": "nodemon scripts/seed.js",
+    "migrate:release-orders": "node scripts/migrateReleaseOrderHistory.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
