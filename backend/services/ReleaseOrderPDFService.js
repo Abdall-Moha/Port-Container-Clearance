@@ -86,7 +86,7 @@ async function generateReleaseOrderPDF({
       "billNumber",
       "number",
       "documentNumber",
-    ]) || String(billOfLading?._id || "Not available");
+    ]) || "Not available";
 
   const importerName =
     getFirstValue(importer, [
@@ -98,11 +98,7 @@ async function generateReleaseOrderPDF({
     getFirstValue(payment, [
       "receiptNumber",
       "receipt",
-      "transactionId",
-      "transactionReference",
-      "paymentReference",
-      "reference",
-    ]) || String(payment._id || "Not available");
+    ]) || "Not available";
 
   const officerName =
     getFirstValue(releasedBy, [
@@ -135,100 +131,51 @@ async function generateReleaseOrderPDF({
   document.pipe(writeStream);
 
   try {
-    // PDF heading.
-    document
-      .fontSize(20)
-      .font("Helvetica-Bold")
-      .text("CONTAINER RELEASE ORDER", {
-        align: "center",
-      });
+    // Add a high-contrast header suitable for on-screen viewing and printing.
+    document.rect(50, 50, 495, 86).fill("#172554");
+    document.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(19)
+      .text("CONTAINER RELEASE ORDER", 70, 72, { align: "center", width: 455 });
+    document.fillColor("#DCE7FF").font("Helvetica").fontSize(10)
+      .text("Port Container Clearance Tracker", 70, 105, { align: "center", width: 455 });
 
-    document.moveDown(0.5);
-
-    document
-      .fontSize(10)
-      .font("Helvetica")
-      .text("Port Container Clearance Tracker", {
-        align: "center",
-      });
-
-    document.moveDown(2);
-
-    // Release Order information.
-    document
-      .fontSize(12)
-      .font("Helvetica-Bold")
-      .text("RELEASE ORDER DETAILS");
-
-    document.moveDown(0.7);
-
-    document
-      .fontSize(10)
-      .font("Helvetica");
-
+    // Print the shipment, payment, and officer details from their saved records.
+    document.fillColor("#172554").font("Helvetica-Bold").fontSize(12)
+      .text("RELEASE ORDER DETAILS", 58, 158);
     const details = [
       ["Release Order ID", String(releaseOrder._id)],
       ["Container Number", container.containerNumber],
-      ["Bill of Lading", billOfLadingNumber],
-      ["Importer", importerName],
-      ["Payment Receipt", paymentReceipt],
+      ["Bill of Lading Number", billOfLadingNumber],
+      ["Importer Name", importerName],
+      ["Duty Receipt Number", paymentReceipt],
       ["Release Date", formatDate(releaseOrder.createdAt)],
       ["Customs Officer", officerName],
-      ["Gate Code", releaseOrder.gateCode],
     ];
 
-    for (const [label, value] of details) {
-      document
-        .font("Helvetica-Bold")
-        .text(`${label}: `, {
-          continued: true,
-        });
-
-      document
-        .font("Helvetica")
-        .text(String(value || "Not available"));
+    let rowTop = 184;
+    for (const [index, [label, value]] of details.entries()) {
+      if (index % 2 === 0) document.rect(55, rowTop, 485, 31).fill("#F1F5F9");
+      document.fillColor("#475569").font("Helvetica-Bold").fontSize(9)
+        .text(label, 67, rowTop + 10, { width: 165 });
+      document.fillColor("#172554").font("Helvetica").fontSize(10)
+        .text(String(value || "Not available"), 235, rowTop + 9, { width: 290 });
+      rowTop += 34;
     }
 
-    document.moveDown(2);
+    // Highlight the six-digit Gate Code while keeping it inside the protected PDF.
+    document.roundedRect(55, 435, 485, 58, 8).fill("#EFF6FF");
+    document.fillColor("#2B4593").font("Helvetica-Bold").fontSize(10)
+      .text("GATE CODE", 72, 450);
+    document.fillColor("#172554").font("Helvetica-Bold").fontSize(23)
+      .text(String(releaseOrder.gateCode || "Not available"), 205, 447, { align: "center", width: 185 });
 
-    // Add the public tracking QR code.
-    document
-      .font("Helvetica-Bold")
-      .fontSize(12)
-      .text("PUBLIC CONTAINER TRACKING");
-
-    document.moveDown(0.5);
-
-    document.image(qrCodeBuffer, {
-      width: 150,
-      height: 150,
-      align: "center",
-    });
-
-    document.moveDown(0.5);
-
-    document
-      .fontSize(9)
-      .font("Helvetica")
-      .text(
-        "Scan this QR code to view the public container tracking information.",
-        {
-          align: "center",
-        },
-      );
-
-    document.moveDown(2);
-
-    // Add a notice about the Gate Code.
-    document
-      .fontSize(9)
-      .font("Helvetica-Bold")
-      .text(
-        "IMPORTANT: Keep the Gate Code secure. It is required for container collection.",
-        {
-          align: "center",
-        },
-      );
+    // Include the tracking QR generated from the configured public tracking URL.
+    document.fillColor("#172554").font("Helvetica-Bold").fontSize(11)
+      .text("PUBLIC CONTAINER TRACKING", 55, 514, { align: "center", width: 485 });
+    document.image(qrCodeBuffer, { x: 230, y: 535, width: 145, height: 145 });
+    document.fillColor("#64748B").font("Helvetica").fontSize(9)
+      .text("Scan to view this container's public clearance progress.", 70, 690, { align: "center", width: 455 });
+    document.fillColor("#9F1239").font("Helvetica-Bold").fontSize(9)
+      .text("Keep the Gate Code secure. It is required for container collection.", 70, 725, { align: "center", width: 455 });
 
     // Finish generating the PDF.
     document.end();

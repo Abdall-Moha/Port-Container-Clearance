@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   FaCalculator,
   FaCheck,
@@ -9,6 +10,7 @@ import {
   FaMagnifyingGlass,
   FaShip,
   FaTruck,
+  FaTriangleExclamation,
   FaUnlock,
 } from "react-icons/fa6";
 import api from "../config/api.js";
@@ -81,6 +83,7 @@ function TrackingResult({ container }) {
 
   return (
     <section className="mt-8 space-y-6" aria-live="polite">
+      {container.releaseOrderStatus === "REVOKED" && <div role="alert" className="flex items-start gap-3 rounded-2xl border border-rose-300 bg-rose-50 px-5 py-4 text-rose-900"><FaTriangleExclamation className="mt-0.5 shrink-0 text-rose-700" /><div><p className="font-extrabold text-rose-800">Release Order Revoked</p><p className="mt-1 text-sm">This release order is no longer valid for collection.</p></div></div>}
       <div className="overflow-hidden rounded-3xl bg-gradient-to-br from-[#172554] via-[#1e3471] to-[#2B4593] text-white shadow-xl shadow-blue-950/15">
         <div className="p-5 sm:p-8">
           <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-start">
@@ -185,24 +188,29 @@ function Metric({ label, value }) {
 
 // Look up a container and distinguish invalid ISO numbers from missing records.
 function TrackingPage() {
-  const [containerNumber, setContainerNumber] = useState("");
+  const [searchParams] = useSearchParams();
+  const qrContainerNumber = searchParams.get("containerNumber") || "";
+  const [containerNumber, setContainerNumber] = useState(qrContainerNumber.toUpperCase());
   const [container, setContainer] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [notFound, setNotFound] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const loadingRequest = useRef(false);
 
-  // Validate the ISO number before requesting public clearance progress.
-  async function handleSubmit(event) {
-    event.preventDefault();
-    if (isLoading) return;
+  // Validate a number and retrieve its public clearance progress.
+  const findContainer = useCallback(async (containerValue) => {
+    if (loadingRequest.current) return;
+    loadingRequest.current = true;
 
-    const normalizedNumber = containerNumber.trim().toUpperCase();
+    const normalizedNumber = containerValue.trim().toUpperCase();
+    setContainerNumber(normalizedNumber);
     setContainer(null);
     setErrorMessage("");
     setNotFound(false);
 
     if (!isValidContainerNumber(normalizedNumber)) {
       setErrorMessage("Invalid container number. Enter a valid ISO 6346 container number.");
+      loadingRequest.current = false;
       return;
     }
 
@@ -221,8 +229,22 @@ function TrackingPage() {
         setErrorMessage(error.response?.data?.message || "Tracking is temporarily unavailable. Please try again.");
       }
     } finally {
+      loadingRequest.current = false;
       setIsLoading(false);
     }
+  }, []);
+
+  // Automatically load the container encoded in the Release Order QR link.
+  useEffect(() => {
+    if (!qrContainerNumber.trim()) return undefined;
+    const requestId = window.setTimeout(() => void findContainer(qrContainerNumber), 0);
+    return () => window.clearTimeout(requestId);
+  }, [findContainer, qrContainerNumber]);
+
+  // Submit the number entered into the public lookup form.
+  async function handleSubmit(event) {
+    event.preventDefault();
+    await findContainer(containerNumber);
   }
 
   // Clear an old lookup result when the visitor edits the container number.
@@ -281,7 +303,7 @@ function TrackingPage() {
         )}
         {isLoading && <p className="mt-6 text-center text-sm font-semibold text-slate-500" role="status">Retrieving the latest clearance progress…</p>}
         {container && <TrackingResult container={container} />}
-        <p className="mt-8 text-center text-xs leading-5 text-slate-500">This public page displays clearance progress only. It does not show personal, document, payment, or release information.</p>
+        <p className="mt-8 text-center text-xs leading-5 text-slate-500">This public page does not show personal details, documents, payment data, or Gate Codes.</p>
       </div>
     </div>
   );

@@ -218,6 +218,29 @@ router.get(
   },
 );
 
+// GET /api/users/active-customs-officers
+// Customs Officers only. Return names and IDs for inspection assignment.
+router.get(
+  "/active-customs-officers",
+  AuthMiddleware,
+  RoleMiddleware("CUSTOMS_OFFICER"),
+  async (req, res, next) => {
+    try {
+      const users = await User.find({
+        role: "CUSTOMS_OFFICER",
+        isActive: true,
+      })
+        .select("_id fullName")
+        .sort({ fullName: 1 })
+        .lean();
+
+      return res.status(200).json({ count: users.length, users });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 // GET /api/users
 // Admin only.
 // Optionally accepts ?role=IMPORTER to filter users by role.

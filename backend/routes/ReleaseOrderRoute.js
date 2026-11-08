@@ -57,15 +57,22 @@ function generateGateCode() {
   return String(randomInt(0, 1000000)).padStart(6, "0");
 }
 
+// Hide internal file paths and keep Gate Codes out of Importer JSON responses.
+function sanitizeReleaseOrder(releaseOrder, role) {
+  const data = releaseOrder.toObject ? releaseOrder.toObject() : { ...releaseOrder };
+  delete data.pdfPath;
+  if (role === "IMPORTER") delete data.gateCode;
+  return data;
+}
+
 /*
   POST /api/release-orders/:containerId/create
 
   Customs Officer creates a release order.
 
   Requirements:
-  - Container must be in RELEASED stage.
+  - Container must have passed its latest inspection at INSPECTION stage.
   - Container must have a successful payment.
-  - Container must have passed its latest inspection.
 
   This endpoint also generates the PDF and QR code.
 */
@@ -90,12 +97,19 @@ router.post(
         return res.status(409).json({ message: "A release order cannot be created for an inactive container." });
       }
 
-      // The container must already be released.
-      if (container.currentStage !== "RELEASED") {
+      // Only a container still at INSPECTION may be advanced by this operation.
+      if (container.currentStage !== "INSPECTION") {
         return res.status(409).json({
           message:
-            "A release order can only be created for a released container.",
+            "A release order can only be created for a container that has not yet been released.",
           currentStage: container.currentStage,
+        });
+      }
+
+      if (container.status !== "ACTIVE") {
+        return res.status(409).json({
+          message: "A held or inactive container cannot be released.",
+          status: container.status,
         });
       }
 
@@ -151,6 +165,10 @@ router.post(
         gateCode,
       });
 
+      let generatedPdfPath = "";
+      let movedToReleased = false;
+      let releaseEvent = null;
+
       try {
         // Retrieve the release order with its related information.
         const populatedOrder = await ReleaseOrder.findById(
@@ -176,11 +194,46 @@ router.post(
           container: populatedOrder.container,
           payment: successfulPayment,
         });
+        generatedPdfPath = pdfPath;
 
         // Save the generated PDF location.
         populatedOrder.pdfPath = pdfPath;
 
         await populatedOrder.save();
+
+        // Move to RELEASED only after the passing inspection and order are ready.
+        const releasedContainer = await Container.findOneAndUpdate(
+          {
+            _id: container._id,
+            currentStage: "INSPECTION",
+            status: "ACTIVE",
+          },
+          { $set: { currentStage: "RELEASED" } },
+          { returnDocument: "after" },
+        );
+
+        if (!releasedContainer) {
+          throw new Error("Container stage changed before release could be completed.");
+        }
+        movedToReleased = true;
+
+        // Record the new stage transition for history and webhook consumers.
+        releaseEvent = await ClearanceEvent.create({
+          container: container._id,
+          fromStage: "INSPECTION",
+          toStage: "RELEASED",
+          performedBy: req.user._id,
+          reason: "Release Order created after the latest inspection passed.",
+        });
+
+        try {
+          await createAndSendWebhook(releaseEvent._id);
+        } catch (webhookError) {
+          console.error("Release stage webhook failed:", webhookError);
+        }
+
+        // Return the final stage instead of the pre-release populated snapshot.
+        populatedOrder.container.currentStage = "RELEASED";
 
         // Notify the importer and assigned agent that the release order is ready.
         try {
@@ -202,10 +255,28 @@ router.post(
         return res.status(201).json({
           message:
             "Release order, PDF, and QR code created successfully.",
-          releaseOrder: populatedOrder,
+          releaseOrder: sanitizeReleaseOrder(populatedOrder, req.user.role),
         });
       } catch (generationError) {
+        // Undo a partial release if order generation or its stage event failed.
+        if (movedToReleased) {
+          await Container.findOneAndUpdate(
+            { _id: container._id, currentStage: "RELEASED" },
+            { $set: { currentStage: "INSPECTION" } },
+          );
+          if (releaseEvent) {
+            await ClearanceEvent.findByIdAndDelete(releaseEvent._id);
+          }
+        }
+
         // Do not leave a release order without its required PDF.
+        if (generatedPdfPath) {
+          try {
+            await fs.unlink(getReleaseOrderPDFPath(generatedPdfPath));
+          } catch (fileError) {
+            if (fileError.code !== "ENOENT") console.error("Release PDF cleanup failed:", fileError);
+          }
+        }
         await ReleaseOrder.findByIdAndDelete(releaseOrder._id);
 
         throw generationError;
@@ -225,6 +296,51 @@ router.post(
           "An error occurred while creating the release order.",
       });
     }
+  },
+);
+
+/*
+  GET /api/release-orders
+
+  Return release orders connected to containers the signed-in user may access.
+  Importers see only their containers, Clearing Agents see assigned containers,
+  and Admins or Customs Officers see the full operational list.
+*/
+router.get(
+  "/",
+  AuthMiddleware,
+  RoleMiddleware("ADMIN", "CUSTOMS_OFFICER", "IMPORTER", "CLEARING_AGENT"),
+  async (req, res) => {
+  try {
+    const containerFilter = {};
+    if (req.user.role === "IMPORTER") containerFilter.importer = req.user._id;
+    if (req.user.role === "CLEARING_AGENT") containerFilter.assignedAgent = req.user._id;
+
+    const accessibleContainers = await Container.find(containerFilter).select("_id").lean();
+    const releaseOrders = await ReleaseOrder.find({
+      container: { $in: accessibleContainers.map((container) => container._id) },
+    })
+      .sort({ createdAt: -1 })
+      .populate("releasedBy", "fullName")
+      .populate("revokedBy", "fullName")
+      .populate("collectedBy", "fullName")
+      .populate({
+        path: "container",
+        select: "containerNumber billOfLading importer assignedAgent size currentStage status",
+        populate: [
+          { path: "billOfLading", select: "blNumber port" },
+          { path: "importer", select: "fullName" },
+        ],
+      });
+
+    return res.status(200).json({
+      count: releaseOrders.length,
+      releaseOrders: releaseOrders.map((order) => sanitizeReleaseOrder(order, req.user.role)),
+    });
+  } catch (error) {
+    console.error("List release orders error:", error);
+    return res.status(500).json({ message: "An error occurred while retrieving release orders." });
+  }
   },
 );
 
@@ -255,7 +371,7 @@ router.patch(
       }
 
       // Find the release order.
-      const releaseOrder = await ReleaseOrder.findById(
+      let releaseOrder = await ReleaseOrder.findById(
         req.params.id,
       );
 
@@ -320,6 +436,32 @@ router.patch(
         });
       }
 
+      // Claim the Gate Code atomically so revocation and duplicate collection cannot race.
+      const claimedReleaseOrder = await ReleaseOrder.findOneAndUpdate(
+        {
+          _id: releaseOrder._id,
+          gateCode,
+          isRevoked: false,
+          gateCodeUsed: false,
+        },
+        {
+          $set: {
+            gateCodeUsed: true,
+            collectedBy: req.user._id,
+            collectedAt: new Date(),
+          },
+        },
+        { returnDocument: "after", runValidators: true },
+      );
+
+      if (!claimedReleaseOrder) {
+        return res.status(409).json({
+          message: "This release order was revoked or already collected. Please refresh.",
+        });
+      }
+
+      releaseOrder = claimedReleaseOrder;
+
       // Update the container only if it is still in RELEASED stage.
       const updatedContainer = await Container.findOneAndUpdate(
         {
@@ -339,22 +481,20 @@ router.patch(
       );
 
       if (!updatedContainer) {
+        await ReleaseOrder.findOneAndUpdate(
+          { _id: releaseOrder._id, gateCodeUsed: true, collectedBy: req.user._id },
+          { $set: { gateCodeUsed: false, collectedBy: null, collectedAt: null } },
+        );
         return res.status(409).json({
           message:
             "Container stage already changed. Please refresh.",
         });
       }
 
-      // Mark the Gate Code as used and record the final stage transition.
-      releaseOrder.gateCodeUsed = true;
-      releaseOrder.collectedBy = req.user._id;
-      releaseOrder.collectedAt = new Date();
-
+      // Record the final stage transition after both collection records are saved.
       let clearanceEvent;
 
       try {
-        await releaseOrder.save();
-
         clearanceEvent = await ClearanceEvent.create({
           container: container._id,
           fromStage: "RELEASED",
@@ -365,15 +505,10 @@ router.patch(
         });
       } catch (saveError) {
         // Restore the release order and container if collection cannot be fully recorded.
-        releaseOrder.gateCodeUsed = false;
-        releaseOrder.collectedBy = null;
-        releaseOrder.collectedAt = null;
-
-        try {
-          await releaseOrder.save();
-        } catch (rollbackError) {
-          console.error("Release order rollback failed:", rollbackError);
-        }
+        await ReleaseOrder.findOneAndUpdate(
+          { _id: releaseOrder._id, gateCodeUsed: true, collectedBy: req.user._id },
+          { $set: { gateCodeUsed: false, collectedBy: null, collectedAt: null } },
+        );
 
         await Container.findOneAndUpdate(
           {
@@ -490,29 +625,25 @@ router.patch(
         return res.status(409).json({ message: "Operational release-order changes are blocked for an inactive container." });
       }
 
-      // Do not revoke an order that has already been revoked.
-      if (releaseOrder.isRevoked) {
+      // Claim revocation atomically so a concurrent collection cannot use this order.
+      const revokedOrder = await ReleaseOrder.findOneAndUpdate(
+        { _id: releaseOrder._id, isRevoked: false, gateCodeUsed: false },
+        {
+          $set: {
+            isRevoked: true,
+            revokedBy: req.user._id,
+            revocationReason: reason.trim(),
+            revokedAt: new Date(),
+          },
+        },
+        { returnDocument: "after", runValidators: true },
+      );
+
+      if (!revokedOrder) {
         return res.status(409).json({
-          message:
-            "This release order has already been revoked.",
+          message: "This release order has already been revoked or collected.",
         });
       }
-
-      // A collected container cannot have its release order revoked.
-      if (releaseOrder.gateCodeUsed) {
-        return res.status(409).json({
-          message:
-            "A release order cannot be revoked after the container has been collected.",
-        });
-      }
-
-      // Save the revocation information.
-      releaseOrder.isRevoked = true;
-      releaseOrder.revokedBy = req.user._id;
-      releaseOrder.revocationReason = reason.trim();
-      releaseOrder.revokedAt = new Date();
-
-      await releaseOrder.save();
 
       // Notify the importer and assigned agent that the release order was revoked.
       const notificationContainer = await Container.findById(releaseOrder.container);
@@ -537,7 +668,7 @@ router.patch(
 
       return res.status(200).json({
         message: "Release order revoked successfully.",
-        releaseOrder,
+        releaseOrder: sanitizeReleaseOrder(revokedOrder, req.user.role),
       });
     } catch (error) {
       console.error("Revoke release order error:", error);
@@ -653,16 +784,8 @@ router.get(
         });
       }
 
-      // Convert the release order into a plain object.
-      const releaseOrderData = releaseOrder.toObject();
-
-      // Importers must not see the Gate Code.
-      if (req.user.role === "IMPORTER") {
-        delete releaseOrderData.gateCode;
-      }
-
       return res.status(200).json({
-        releaseOrder: releaseOrderData,
+        releaseOrder: sanitizeReleaseOrder(releaseOrder, req.user.role),
       });
     } catch (error) {
       console.error(
@@ -683,12 +806,7 @@ router.get(
 
   Download the generated Release Order PDF.
 
-  Access:
-  - Admin
-  - Customs Officer
-  - Assigned Clearing Agent
-
-  Importers cannot download this PDF because it contains the Gate Code.
+  Access is limited to users authorized for the connected container.
 */
 router.get(
   "/:id/pdf",
@@ -722,14 +840,6 @@ router.get(
         return res.status(403).json({
           message:
             "You are not allowed to download this release order.",
-        });
-      }
-
-      // Importers cannot download the PDF because it contains the Gate Code.
-      if (req.user.role === "IMPORTER") {
-        return res.status(403).json({
-          message:
-            "You are not allowed to download this release order PDF.",
         });
       }
 
@@ -827,16 +937,8 @@ router.get(
         });
       }
 
-      // Convert the release order into a plain object.
-      const releaseOrderData = releaseOrder.toObject();
-
-      // Importers must not see the Gate Code.
-      if (req.user.role === "IMPORTER") {
-        delete releaseOrderData.gateCode;
-      }
-
       return res.status(200).json({
-        releaseOrder: releaseOrderData,
+        releaseOrder: sanitizeReleaseOrder(releaseOrder, req.user.role),
       });
     } catch (error) {
       console.error("Get release order error:", error);

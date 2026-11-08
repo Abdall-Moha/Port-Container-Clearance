@@ -108,6 +108,12 @@ async function isValidImageSignature(file) {
   }
 }
 
+// Allow the assigned inspector, or the scheduler when no inspector was assigned, to manage the attempt.
+function canManageInspection(user, inspection) {
+  const responsibleOfficer = inspection.inspector || inspection.scheduledBy;
+  return String(responsibleOfficer) === String(user?._id);
+}
+
 /*
   POST /api/inspections/:containerId/schedule
 
@@ -116,7 +122,7 @@ async function isValidImageSignature(file) {
   Expected body:
   {
     "scheduledAt": "2026-11-08T10:00:00",
-    "inspectorId": "CUSTOMS_OFFICER_USER_ID"
+    "inspectorId": "CUSTOMS_OFFICER_USER_ID" // optional
   }
 
   A new inspection attempt is created each time.
@@ -145,24 +151,24 @@ router.post(
         });
       }
 
-      // Require an assigned Customs Officer.
-      if (!inspectorId) {
-        return res.status(400).json({
-          message: "Please select a Customs Officer for this inspection.",
-        });
-      }
+      // Validate an inspector only when the Customs Officer chooses one.
+      let inspector = null;
+      if (inspectorId) {
+        if (!/^[0-9a-fA-F]{24}$/.test(inspectorId)) {
+          return res.status(400).json({ message: "Invalid Customs Officer ID." });
+        }
 
-      // Check that the assigned inspector is an active Customs Officer.
-      const inspector = await User.findOne({
-        _id: inspectorId,
-        role: "CUSTOMS_OFFICER",
-        isActive: true,
-      });
-
-      if (!inspector) {
-        return res.status(400).json({
-          message: "The selected inspector is not an active Customs Officer.",
+        inspector = await User.findOne({
+          _id: inspectorId,
+          role: "CUSTOMS_OFFICER",
+          isActive: true,
         });
+
+        if (!inspector) {
+          return res.status(400).json({
+            message: "The selected inspector is not an active Customs Officer.",
+          });
+        }
       }
 
       // Find the container.
@@ -224,7 +230,7 @@ router.post(
         container: container._id,
         inspectionNumber,
         scheduledAt: inspectionDate,
-        inspector: inspector._id,
+        inspector: inspector?._id || null,
         scheduledBy: req.user._id,
       });
 
@@ -408,10 +414,10 @@ router.patch(
         });
       }
 
-      // Only the assigned officer can record this inspection's result.
-      if (String(inspection.inspector) !== String(req.user._id)) {
+      // Only the assigned officer, or scheduler for an unassigned inspection, can record its result.
+      if (!canManageInspection(req.user, inspection)) {
         return res.status(403).json({
-          message: "Only the assigned inspector can record this result.",
+          message: "Only the assigned inspector or scheduling officer can record this result.",
         });
       }
 
@@ -442,101 +448,50 @@ router.patch(
         });
       }
 
-      // A PASS releases the container to the next clearance stage.
-      // A FAIL keeps it at INSPECTION but places it on HOLD.
-      const updatedContainer = await Container.findOneAndUpdate(
+      // Claim the pending inspection atomically so repeated requests cannot record twice.
+      const completedInspection = await Inspection.findOneAndUpdate(
+        { _id: inspection._id, result: "PENDING" },
         {
-          _id: container._id,
-          currentStage: "INSPECTION",
-          status: "ACTIVE",
+          $set: {
+            result,
+            notes: notes?.trim() || "",
+            completedAt: new Date(),
+          },
         },
-        {
-          $set:
-            result === "PASS"
-              ? {
-                  currentStage: "RELEASED",
-                }
-              : {
-                  status: "HELD",
-                },
-        },
-        {
-          returnDocument: "after",
-        },
+        { returnDocument: "after", runValidators: true },
       );
 
-      if (!updatedContainer) {
-        return res.status(409).json({
-          message: "Container stage already changed. Please refresh.",
-        });
+      if (!completedInspection) {
+        return res.status(409).json({ message: "This inspection already has a recorded result." });
       }
 
-      // Save the inspection result and completion time.
-      inspection.result = result;
-      inspection.notes = notes?.trim() || "";
-      inspection.completedAt = new Date();
-
-      try {
-        await inspection.save();
-      } catch (saveError) {
-        // Restore the container if the inspection result could not be saved.
-        await Container.findOneAndUpdate(
-          result === "PASS"
-            ? {
-                _id: container._id,
-                currentStage: "RELEASED",
-              }
-            : {
-                _id: container._id,
-                currentStage: "INSPECTION",
-                status: "HELD",
-              },
-          {
-            $set: {
-              currentStage: "INSPECTION",
-              status: "ACTIVE",
-            },
-          },
-        );
-
-        throw saveError;
-      }
-
-      // Record the clearance transition only when the inspection passes.
-      let clearanceEvent = null;
-
-      if (result === "PASS") {
+      // A failed inspection preserves INSPECTION and places the container on hold.
+      let updatedContainer = container;
+      if (result === "FAIL") {
         try {
-          clearanceEvent = await ClearanceEvent.create({
-            container: container._id,
-            fromStage: "INSPECTION",
-            toStage: "RELEASED",
-            performedBy: req.user._id,
-            reason: "Container passed inspection.",
-          });
-        } catch (eventError) {
-          // Restore the container and inspection if the history event cannot be saved.
-          await Container.findOneAndUpdate(
-            {
-              _id: container._id,
-              currentStage: "RELEASED",
-            },
-            {
-              $set: {
-                currentStage: "INSPECTION",
-                status: "ACTIVE",
-              },
-            },
+          updatedContainer = await Container.findOneAndUpdate(
+            { _id: container._id, currentStage: "INSPECTION", status: "ACTIVE" },
+            { $set: { status: "HELD" } },
+            { returnDocument: "after" },
           );
+        } catch (containerUpdateError) {
+          await Inspection.findOneAndUpdate(
+            { _id: inspection._id, result: "FAIL" },
+            { $set: { result: "PENDING", notes: "", completedAt: null } },
+          );
+          throw containerUpdateError;
+        }
 
-          inspection.result = "PENDING";
-          inspection.notes = "";
-          inspection.completedAt = null;
-          await inspection.save();
-
-          throw eventError;
+        if (!updatedContainer) {
+          await Inspection.findOneAndUpdate(
+            { _id: inspection._id, result: "FAIL" },
+            { $set: { result: "PENDING", notes: "", completedAt: null } },
+          );
+          return res.status(409).json({ message: "Container status changed. Please refresh." });
         }
       }
+
+      // PASS remains at INSPECTION; Release Order creation owns the RELEASED transition.
 
       // Notify the importer and assigned agent about the inspection result.
       try {
@@ -548,27 +503,17 @@ router.patch(
           titleSomali: result === "PASS" ? "Baaritaanka Waa La Gudbay" : "Baaritaanka Waa Lagu Dhacay",
           messageEnglish:
             result === "PASS"
-              ? `Container ${container.containerNumber} passed inspection and is now released.`
+              ? `Container ${container.containerNumber} passed inspection and is eligible for a Release Order.`
               : `Container ${container.containerNumber} failed inspection and has been placed on hold. Reason: ${notes.trim()}`,
           messageSomali:
             result === "PASS"
-              ? `Konteenarka ${container.containerNumber} wuu gudbay baaritaanka waxaana loo wareejiyay marxaladda sii-daynta.`
+              ? `Konteenarka ${container.containerNumber} wuu gudbay baaritaanka wuxuuna u qalmaa Amarka Sii-daynta.`
               : `Konteenarka ${container.containerNumber} wuu ku dhacay baaritaanka waxaana la saaray hakad. Sababta: ${notes.trim()}`,
           sendSMS: true,
         });
       } catch (notificationError) {
         // Notification failure must not undo a recorded inspection result.
         console.error("Inspection result notification failed:", notificationError);
-      }
-
-      // Send a webhook only when PASS changes the clearance stage to RELEASED.
-      if (clearanceEvent) {
-        try {
-          await createAndSendWebhook(clearanceEvent._id);
-        } catch (webhookError) {
-          // Webhook failure must not undo a successful inspection.
-          console.error("Inspection result webhook failed:", webhookError);
-        }
       }
 
       const populatedInspection = await Inspection.findById(inspection._id)
@@ -578,7 +523,7 @@ router.patch(
       return res.status(200).json({
         message:
           result === "PASS"
-            ? "Inspection passed. Container is now released."
+            ? "Inspection passed. The container is eligible for a Release Order."
             : "Inspection failed. Container has been placed on hold.",
         inspection: sanitizeInspection(populatedInspection),
         container: {
@@ -631,12 +576,12 @@ router.post(
         });
       }
 
-      // Only the assigned officer can upload photos.
-      if (String(inspection.inspector) !== String(req.user._id)) {
+      // Only the assigned officer, or scheduler for an unassigned inspection, can upload photos.
+      if (!canManageInspection(req.user, inspection)) {
         await deleteUploadedFiles(req.files);
 
         return res.status(403).json({
-          message: "Only the assigned inspector can upload inspection photos.",
+          message: "Only the assigned inspector or scheduling officer can upload inspection photos.",
         });
       }
 

@@ -148,9 +148,9 @@ function DashboardLayout() {
       )}
 
       <div className="min-h-screen">
-        {/* Header: floating card with margins on every side */}
-        <header className="sticky top-0 z-20 bg-slate-100/90 px-4 pt-3 backdrop-blur sm:px-7 lg:px-9">
-          <div className="mx-auto flex min-h-[68px] max-w-7xl items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm shadow-slate-900/[0.04] sm:px-6">
+        {/* Header: normal full-width bar stuck to the top */}
+        <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 shadow-sm shadow-slate-900/[0.03] backdrop-blur">
+          <div className="flex min-h-[72px] items-center justify-between gap-4 px-4 sm:px-7 lg:px-9">
             <div className="flex min-w-0 items-center gap-3">
               <button
                 type="button"
@@ -170,8 +170,9 @@ function DashboardLayout() {
                 </h1>
               </div>
             </div>
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="hidden size-10 shrink-0 items-center justify-center rounded-full bg-blue-100 text-sm font-black text-[#2B4593] sm:flex">
+            {/* User info: hidden on phones, shown from small screens and up */}
+            <div className="hidden min-w-0 items-center gap-3 sm:flex">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-blue-100 text-sm font-black text-[#2B4593]">
                 {user?.fullName?.trim()?.charAt(0)?.toUpperCase() || "U"}
               </span>
               <div className="min-w-0 text-right">

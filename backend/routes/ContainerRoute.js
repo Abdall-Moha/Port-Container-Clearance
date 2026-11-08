@@ -7,6 +7,7 @@ import User from "../models/User.js";
 import ClearanceEvent from "../models/ClearanceEvent.js";
 import Document from "../models/Document.js";
 import DocumentVersion from "../models/DocumentVersion.js";
+import ReleaseOrder from "../models/ReleaseOrder.js";
 
 import AuthMiddleware from "../middleware/AuthMiddleware.js";
 import RoleMiddleware from "../middleware/RoleMiddleware.js";
@@ -93,6 +94,9 @@ router.get("/track", publicTrackingRateLimit, async (req, res, next) => {
       .select("toStage createdAt")
       .sort({ createdAt: 1 })
       .lean();
+    const releaseOrder = await ReleaseOrder.findOne({ container: container._id })
+      .select("isRevoked gateCodeUsed")
+      .lean();
 
     const arrivalEvent = events.find((event) => event.toStage === "ARRIVED");
     const collectionEvent = events.find((event) => event.toStage === "COLLECTED");
@@ -105,6 +109,13 @@ router.get("/track", publicTrackingRateLimit, async (req, res, next) => {
     return res.status(200).json({
       containerNumber: container.containerNumber,
       currentStage: container.currentStage,
+      releaseOrderStatus: releaseOrder
+        ? releaseOrder.isRevoked
+          ? "REVOKED"
+          : releaseOrder.gateCodeUsed
+            ? "COLLECTED"
+            : "ACTIVE"
+        : null,
       completedStages: events.map((event) => ({
         stage: event.toStage,
         completedAt: event.createdAt,
@@ -431,6 +442,7 @@ router.get("/", AuthMiddleware, async (req, res, next) => {
       .populate("importer", "fullName email phone")
       .populate("assignedAgent", "fullName email phone")
       .populate("createdBy", "fullName email")
+      .populate("dutyAssessment.assessedBy", "fullName")
       .sort({ createdAt: -1 });
 
     return res.status(200).json({
@@ -459,7 +471,8 @@ router.get("/:id", AuthMiddleware, async (req, res, next) => {
       .populate("billOfLading", "blNumber shippingLine port")
       .populate("importer", "fullName email phone")
       .populate("assignedAgent", "fullName email phone")
-      .populate("createdBy", "fullName email");
+      .populate("createdBy", "fullName email")
+      .populate("dutyAssessment.assessedBy", "fullName");
 
     if (!container) {
       return res.status(404).json({

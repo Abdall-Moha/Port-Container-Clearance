@@ -15,6 +15,9 @@ import PaymentsPage from "./pages/PaymentsPage.jsx";
 import ShippingLinesPage from "./pages/ShippingLinesPage.jsx";
 import TrackingPage from "./pages/TrackingPage.jsx";
 import UsersManagementPage from "./pages/UsersManagementPage.jsx";
+import DutyAssessmentsPage from "./pages/DutyAssessmentsPage.jsx";
+import InspectionsPage from "./pages/InspectionsPage.jsx";
+import ReleaseOrdersPage from "./pages/ReleaseOrdersPage.jsx";
 
 // Configure public routes and protect the shared dashboard shell.
 function App() {
@@ -49,6 +52,13 @@ function App() {
             </Route>
             <Route element={<ProtectedRoute allowedRoles={["IMPORTER", "CLEARING_AGENT"]} />}>
               <Route path="payments" element={<PaymentsPage />} />
+            </Route>
+            <Route element={<ProtectedRoute allowedRoles={["CUSTOMS_OFFICER"]} />}>
+              <Route path="duty-assessments" element={<DutyAssessmentsPage />} />
+              <Route path="inspections" element={<InspectionsPage />} />
+            </Route>
+            <Route element={<ProtectedRoute allowedRoles={["ADMIN", "IMPORTER", "CLEARING_AGENT", "CUSTOMS_OFFICER"]} />}>
+              <Route path="release-orders" element={<ReleaseOrdersPage />} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

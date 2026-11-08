@@ -23,11 +23,11 @@ const inspectionSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Customs Officer assigned to perform the inspection.
+    // Optional Customs Officer assigned to perform the inspection.
     inspector: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      default: null,
     },
 
     // Officer who scheduled the inspection.
