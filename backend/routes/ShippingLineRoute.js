@@ -245,23 +245,29 @@ router.patch(
         });
       }
 
-      // Check for duplicate names or codes before updating.
-      const duplicateShippingLine = await ShippingLine.findOne({
-        $and: [
-          { _id: { $ne: id } },
-          {
-            $or: [
-              ...(updates.name ? [{ name: updates.name }] : []),
-              ...(updates.code ? [{ code: updates.code }] : []),
-            ],
-          },
-        ],
-      });
-
-      if (duplicateShippingLine) {
-        return res.status(409).json({
-          message: "Another shipping line already uses this name or code.",
+      // Check duplicates only when the update changes a name or code.
+      if (updates.name !== undefined || updates.code !== undefined) {
+        const duplicateShippingLine = await ShippingLine.findOne({
+          $and: [
+            { _id: { $ne: id } },
+            {
+              $or: [
+                ...(updates.name !== undefined
+                  ? [{ name: updates.name }]
+                  : []),
+                ...(updates.code !== undefined
+                  ? [{ code: updates.code }]
+                  : []),
+              ],
+            },
+          ],
         });
+
+        if (duplicateShippingLine) {
+          return res.status(409).json({
+            message: "Another shipping line already uses this name or code.",
+          });
+        }
       }
 
       // Update the shipping line.
